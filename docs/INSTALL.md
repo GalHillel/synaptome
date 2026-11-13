@@ -20,8 +20,8 @@ Synaptome is one npm package with no dependencies.
 npm install -g synaptome
 ```
 
-Until the package is published, install from a package file built from this repository (`npm run build`, then
-`npm pack` inside `dist/`):
+Version 0.2.0 is on npm (a pre-release; the `next` tag). To install a build of your own instead, make a package file
+from this repository (`npm run build`, then `npm pack` inside `dist/`):
 
 ```
 npm install -g ./synaptome-0.2.0.tgz

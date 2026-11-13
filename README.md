@@ -17,8 +17,8 @@ Everything runs on your machine: one SQLite database, one snapshot store, and th
 
 ## Status
 
-**Pre-release (0.2.0, not yet published).** Windows is the tested platform; macOS and Linux are expected to work and
-are not verified. What works and what does not, per subsystem and with evidence:
+**Pre-release (0.2.0, on npm).** Windows is the tested platform, including a clean install from npm; on macOS and
+Linux the test suite passes in CI, and a real install there is not yet verified. What works and what does not, per subsystem and with evidence:
 [`docs/ACCEPTANCE_MATRIX.md`](docs/ACCEPTANCE_MATRIX.md). Known limits include: executable capability content always
 needs a person's approval (no isolation provider for dynamic tests), most model providers other than headless Claude
 Code are not yet verified by a live call, and a host may or may not load a capability it was offered.
@@ -32,7 +32,7 @@ npm install -g synaptome
 synaptome init
 ```
 
-Until it is published, install from a package file built from this repository (`npm run build`, then `npm pack` in
+To install a build of your own, make a package file from this repository (`npm run build`, then `npm pack` in
 `dist/`). Details, data locations, upgrade, repair and uninstall: [`docs/INSTALL.md`](docs/INSTALL.md). Fifteen steps
 from nothing to a working setup and back: [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
 

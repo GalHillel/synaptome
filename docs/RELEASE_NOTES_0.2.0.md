@@ -30,7 +30,8 @@ verifies it; the original is untouched ([`docs/MIGRATION.md`](MIGRATION.md)).
 
 ## Known limits
 
-- Tested on Windows only; macOS and Linux are expected to work and are unverified.
+- Installed and exercised end to end on Windows (from npm, in a clean profile). On macOS and Linux the full test suite
+  passes in CI; a real install there is not yet verified.
 - Executable capability content is never tested dynamically (no isolation provider); it always needs approval.
 - Of the model providers, only headless Claude Code is verified by a live call; the others are implemented and
   contract-tested.

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — unreleased (in development)
+## 0.2.0 — 2026-11-13 (pre-release on npm)
 
 ### Changed
 - The product is now called **Synaptome**. Executable `synaptome`, package scope `@synaptome/*`, variables

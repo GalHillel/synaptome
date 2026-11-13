@@ -7,13 +7,18 @@
 # Windows account or Windows Sandbox (Windows 11 Home has no Sandbox; a new local account needs the owner's approval).
 #
 #   powershell -NoProfile -File scripts/clean-room.ps1 -Package dist\synaptome-0.2.0.tgz [-Out .tmp/clean-room]
+#   powershell -NoProfile -File scripts/clean-room.ps1 -Spec synaptome@0.2.0   (from the npm registry instead; the
+#     profile's own npm cache starts empty, so the package really is downloaded)
 param(
-  [Parameter(Mandatory = $true)][string]$Package,
+  [string]$Package,
+  [string]$Spec,
   [string]$Out = '.tmp/clean-room'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$pkg = (Resolve-Path $Package).Path
+if ([bool]$Package -eq [bool]$Spec) { throw 'give exactly one of -Package <file> or -Spec <name@version>' }
+if ($Spec -and $Spec -notmatch '^[a-z0-9@][a-z0-9._/@-]*$') { throw "-Spec '$Spec' is not a plain package spec" }
+$pkg = if ($Package) { (Resolve-Path $Package).Path } else { $Spec }
 $outDir = Join-Path $root $Out
 New-Item -ItemType Directory -Force $outDir | Out-Null
 $box = Join-Path ([IO.Path]::GetTempPath()) ("synaptome-clean-room-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -68,7 +73,9 @@ $node = Join-Path $nodeDir 'node.exe'
 function S([string[]]$a) { return @('/d', '/s', '/c', ('""' + $syn + '" ' + (($a | ForEach-Object { if ($_ -match '[\s"]') { '"' + $_ + '"' } else { $_ } }) -join ' ') + '"')) }
 
 Invoke-Step 1 'Node.js 24 or later' $node @('--version') { param($c, $o) Need ($o -match '^v(2[4-9]|[3-9]\d)\.') "node is $o"; $o.Trim() } | Out-Null
-Invoke-Step 2 'Install from the package file' $node @($npmCli, 'install', '-g', '--prefix', $prefix, $pkg, '--offline') { param($c, $o) Need ($c -eq 0) "npm exit $c"; Need (Test-Path $syn) 'no synaptome command in the prefix'; 'installed into the profile''s npm prefix' } | Out-Null
+$installArgs = @($npmCli, 'install', '-g', '--prefix', $prefix, $pkg) + $(if ($Package) { @('--offline') } else { @() })
+$installTitle = if ($Package) { 'Install from the package file' } else { "Install $Spec from the npm registry" }
+Invoke-Step 2 $installTitle $node $installArgs { param($c, $o) Need ($c -eq 0) "npm exit $c"; Need (Test-Path $syn) 'no synaptome command in the prefix'; 'installed into the profile''s npm prefix' } | Out-Null
 Invoke-Step 3 'It runs' $cmd (S @('--version')) { param($c, $o) Need ($c -eq 0 -and $o.Trim() -match '^\d+\.\d+\.\d+') "got '$o'"; $o.Trim() } | Out-Null
 $init = Invoke-Step 4 'Set up' $cmd (S @('--json', 'init')) { param($c, $o, $j) Need ($c -eq 0 -and $j.ok) "init exit $c"; Need ($j.firstTime) 'not first time'; Need ($j.home -like "$profileDir*") "home outside the profile: $($j.home)"; "home $($j.home); $(@($j.checks).Count) checks" }
 Invoke-Step 5 'Checks' $cmd (S @('--json', 'doctor')) { param($c, $o, $j) Need ($c -eq 0) "doctor exit $c"; "$(@($j.checks | Where-Object { $_.status -eq 'ok' }).Count) ok, $(@($j.checks | Where-Object { $_.status -eq 'warn' }).Count) notices" } | Out-Null

@@ -62,7 +62,8 @@ has not decided otherwise (decision D-030):
 - **Name (owner, 2026-11-13):** confirmed after the owner's legal check (D-031). Repository `GalHillel/synaptome`
   created private and empty; the local remote `public` pushes only `public/main` → `main`, no tags.
 - **Pushed (owner-approved, 2026-11-13).** Later public commits go on top with `--append` and are pushed as fast-forwards.
-- **Next, each separately approved:** making the repository public, npm, release, site. Every push sends `public/main` alone (`git push public`, no tags) and so
+- **Public (owner-approved, 2026-11-13);** private vulnerability reporting enabled; anonymous clone verified.
+- **Next, each separately approved:** npm, release, site. Every push sends `public/main` alone (`git push public`, no tags) and so
   carries none of the private history.
 
 ## Gated steps after the decision (each needs the owner's approval)
