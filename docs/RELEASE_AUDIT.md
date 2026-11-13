@@ -61,7 +61,8 @@ has not decided otherwise (decision D-030):
   same way whenever the private branch moves on before the push).
 - **Name (owner, 2026-11-13):** confirmed after the owner's legal check (D-031). Repository `GalHillel/synaptome`
   created private and empty; the local remote `public` pushes only `public/main` → `main`, no tags.
-- **Next, each separately approved:** the push, which sends `public/main` alone (`git push public`, no tags) and so
+- **Pushed (owner-approved, 2026-11-13).** Later public commits go on top with `--append` and are pushed as fast-forwards.
+- **Next, each separately approved:** making the repository public, npm, release, site. Every push sends `public/main` alone (`git push public`, no tags) and so
   carries none of the private history.
 
 ## Gated steps after the decision (each needs the owner's approval)

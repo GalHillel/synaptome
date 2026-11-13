@@ -11,7 +11,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const npmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+// npm's script beside node.exe (Windows) or in <prefix>/lib/node_modules (Linux, macOS); else npm through the shell.
+const npmCli = [path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'), path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')].find((c) => fs.existsSync(c)) ?? '';
 const npm = (...args) => (fs.existsSync(npmCli) ? [process.execPath, npmCli, ...args] : ['npm', ...args]);
 const node = (...args) => [process.execPath, '--disable-warning=ExperimentalWarning', ...args];
 const skipAudit = process.argv.includes('--skip-audit');

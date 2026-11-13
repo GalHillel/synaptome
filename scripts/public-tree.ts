@@ -17,7 +17,10 @@
  *   npx tsx scripts/public-tree.ts --out .tmp/public-tree            also write the files there (to run CI on them)
  *   npx tsx scripts/public-tree.ts --commit --author "Name <email>"  also create one parentless commit on
  *                                                                    branch public/main (--branch to change it)
- *   --rev <rev> (default HEAD) · --forbid <text> (repeatable; more strings that must not appear) · --replace
+ *   npx tsx scripts/public-tree.ts --commit --append --message "…" --author "Name <email>"
+ *                                                                    the next public commit, on top of public/main
+ *   --rev <rev> (default HEAD) · --forbid <text> (repeatable; more strings that must not appear)
+ *   --replace (a new first commit instead; only before anything was pushed)
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -184,18 +187,30 @@ export function writeTree(root: string, result: PublicTreeResult, out?: string) 
   }
 }
 
-/** One parentless commit of `tree` on `branch`, under the identity the owner chose. Never pushes. */
-export function commitTree(root: string, tree: string, author: string, opts: { branch?: string; replace?: boolean; message?: string } = {}) {
+/**
+ * A commit of `tree` on `branch`, under the identity the owner chose. Never pushes.
+ * - default: the first public commit, without a parent; refuses when the branch exists.
+ * - `replace`: a new parentless commit in place of the branch (only before anything was pushed).
+ * - `append`: the next public commit, on top of the branch (what is pushed later is a fast-forward).
+ */
+export function commitTree(root: string, tree: string, author: string, opts: { branch?: string; replace?: boolean; append?: boolean; message?: string } = {}) {
   const m = /^\s*([^<>]+?)\s*<([^<>\s]+@[^<>\s]+)>\s*$/.exec(author);
   if (!m) throw new Error('--author must look like "Name <email>"');
+  if (opts.replace && opts.append) throw new Error('--replace and --append cannot be combined');
   const branch = opts.branch ?? 'public/main';
   const ref = `refs/heads/${branch}`;
-  if (spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd: root }).status === 0 && !opts.replace) throw new Error(`branch ${branch} exists; pass --replace to point it at a new commit`);
+  const current = spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd: root });
+  const exists = current.status === 0;
+  if (exists && !opts.replace && !opts.append) throw new Error(`branch ${branch} exists; pass --append for the next public commit (or --replace before anything was pushed)`);
+  if (opts.append && !exists) throw new Error(`branch ${branch} does not exist; the first public commit is made without --append`);
+  const parent = opts.append ? current.stdout.toString().trim() : null;
+  if (parent && git(root, ['rev-parse', `${parent}^{tree}`]).toString().trim() === tree) throw new Error(`nothing to commit: ${branch} already has this tree`);
+  if (opts.append && !opts.message) throw new Error('--append needs --message (what changed, for the public history)');
   const env = { GIT_AUTHOR_NAME: m[1], GIT_AUTHOR_EMAIL: m[2], GIT_COMMITTER_NAME: m[1], GIT_COMMITTER_EMAIL: m[2] };
   const message = opts.message ?? 'Synaptome 0.2.0\n\nFirst public commit. Development before 0.2.0 is kept in a private repository; see\ndocs/internal/PROVENANCE.md.\n';
-  const commit = git(root, ['commit-tree', tree], { input: message, env }).toString().trim();
+  const commit = git(root, ['commit-tree', tree, ...(parent ? ['-p', parent] : [])], { input: message.endsWith('\n') ? message : `${message}\n`, env }).toString().trim();
   git(root, ['update-ref', ref, commit]);
-  return { branch, commit };
+  return { branch, commit, parent };
 }
 
 function main(argv: string[]) {
@@ -224,8 +239,8 @@ function main(argv: string[]) {
   if (argv.includes('--commit')) {
     const author = val('--author');
     if (!author) throw new Error('--commit needs --author "Name <email>" (the public identity; nothing is assumed)');
-    const c = commitTree(root, tree, author, { branch: val('--branch'), replace: argv.includes('--replace') });
-    say(`commit          ${c.commit} on ${c.branch} (no parent; nothing pushed)`);
+    const c = commitTree(root, tree, author, { branch: val('--branch'), replace: argv.includes('--replace'), append: argv.includes('--append'), message: val('--message') });
+    say(`commit          ${c.commit} on ${c.branch} (${c.parent ? `parent ${c.parent.slice(0, 7)}` : 'no parent'}; nothing pushed)`);
   }
 }
 

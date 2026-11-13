@@ -41,7 +41,11 @@ describe('concurrent writers', () => {
     const stop = watchEvents(sys.db, (rows: EventRow[]) => seen.push(...rows.map((r) => r.id)), { intervalMs: 50 });
 
     const results = await Promise.all(Array.from({ length: WORKERS }, (_, i) => worker(i)));
-    await new Promise((r) => setTimeout(r, 400)); // the watcher's last interval
+    // Let the watcher catch up with everything committed. A fixed pause was not enough under a full parallel run
+    // (timers fire late under load), so wait for the count with a deadline; the assertions below are unchanged.
+    const total = () => sys.db.get<{ n: number }>('SELECT COUNT(*) n FROM events WHERE id > ?', startId)!.n;
+    for (const until = Date.now() + 10_000; seen.length < total() && Date.now() < until; ) await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 150)); // one more interval: a duplicate delivery would show up here
     stop();
 
     expect(results.flatMap((r) => r.errors)).toEqual([]);

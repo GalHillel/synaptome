@@ -41,6 +41,10 @@
   out, links into them made plain text, refuses on broken links, secret-like strings, machine or author identifiers
   and stray binaries) and can create its one parentless commit; the repository's own history is never changed.
 
+### Fixed
+- npm is found in the Linux and macOS layout too (`<prefix>/lib/node_modules`), by `synaptome upgrade`, the tests and
+  `npm run ci`; before, upgrade fell back to npm through the shell there and the tests failed.
+
 ### Deprecated
 - The `drelqavo` command (forwards to `synaptome` with a notice) and `DRELQAVO_*` variables (read as a fallback).
 

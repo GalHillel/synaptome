@@ -5,11 +5,28 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Db, PRODUCT, openSystem } from '@synaptome/core';
-import { rollbackDatabasePlan } from '../src/commands/upgrade';
+import { npmCliScript, rollbackDatabasePlan } from '../src/commands/upgrade';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const NPM_CLI = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+const NPM_CLI = npmCliScript() ?? (() => { throw new Error('npm-cli.js not found for this Node'); })();
 const NEXT = '0.2.99';
+
+describe("npm's script", () => {
+  it('is found beside node.exe (Windows layout) and in <prefix>/lib/node_modules (Linux and macOS layout)', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'synaptome-npmcli-'));
+    const place = (rel: string) => {
+      fs.mkdirSync(path.dirname(path.join(base, rel)), { recursive: true });
+      fs.writeFileSync(path.join(base, rel), '');
+    };
+    place('win/node_modules/npm/bin/npm-cli.js');
+    place('unix/lib/node_modules/npm/bin/npm-cli.js');
+    expect(npmCliScript(path.join(base, 'win', 'node.exe'))).toBe(path.join(base, 'win', 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+    expect(npmCliScript(path.join(base, 'unix', 'bin', 'node'))).toBe(path.join(base, 'unix', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+    expect(npmCliScript(path.join(base, 'none', 'bin', 'node'))).toBeNull();
+    expect(npmCliScript()).not.toBeNull(); // the Node running these tests has one
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+});
 
 describe('rollback database rule', () => {
   it('keeps the database when the schema did not change, restores it only when nothing happened since, and otherwise refuses unless told', () => {

@@ -23,7 +23,7 @@ Read in this order: this file, `docs/MASTER_PLAN.md` (approved plan, Phases 0–
 Update: the owner chose their current Git identity as the public author; `public/main` holds the one parentless
 public commit (step 2 below is done). If `rebrand/synaptome` moves on before the push, rebuild it with
 `npx tsx scripts/public-tree.ts --commit --replace --author "$(git config user.name) <$(git config user.email)>"`.
-Name confirmed by the owner (D-031). The repository `GalHillel/synaptome` exists, **private and empty**; the local remote `public` can push only `public/main` → `main` (no tags). Next: the push (step 3, needs approval), then CI green on GitHub.
+Name confirmed by the owner (D-031). The repository `GalHillel/synaptome` exists, **private and empty**; the local remote `public` can push only `public/main` → `main` (no tags). Pushed (owner-approved): the repository holds `public/main` and is still private. First GitHub CI run: Windows (required) green; Ubuntu and macOS (reported) failed because tests looked for npm's script only in the Windows layout. Fixed (`npmCliScript`) and sent as the second public commit. From now on public commits are added on top: `npx tsx scripts/public-tree.ts --commit --append --message "…" --author "$(git config user.name) <$(git config user.email)>"`, then `git push public` (a fast-forward of `public/main` → `main`; never `--replace` again). Next, each approved: make the repository public → `npm publish --tag next` → release → site.
 
 S1–S4 are done. The owner chose **option C, a fresh public history** (D-030). `scripts/public-tree.ts` builds the
 public tree from a commit (private record left out, overlay from `packaging/public/`, all checks pass); `npm ci` and

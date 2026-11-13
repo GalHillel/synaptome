@@ -113,6 +113,23 @@ describe('public tree', () => {
     expect(commitTree(dir, tree, 'Public Name <public@users.noreply.example>', { replace: true }).commit).toBe(git(dir, 'rev-parse', 'public/main'));
   });
 
+  it('adds the next public commit on top of the first, only with a message and only when the tree changed', () => {
+    const dir = fixture(CLEAN);
+    const who = 'Public Name <public@users.noreply.example>';
+    const first = commitTree(dir, writeTree(dir, buildPublicTree(dir)), who);
+    expect(() => commitTree(dir, writeTree(dir, buildPublicTree(dir)), who, { append: true, message: 'same' })).toThrow(/nothing to commit/);
+    fs.writeFileSync(path.join(dir, 'src', 'index.ts'), 'export const x = 2;\n');
+    git(dir, 'commit', '-q', '-am', 'private work');
+    const tree = writeTree(dir, buildPublicTree(dir));
+    expect(() => commitTree(dir, tree, who, { append: true })).toThrow(/--message/);
+    expect(() => commitTree(dir, tree, who, { append: true, replace: true, message: 'x' })).toThrow(/cannot be combined/);
+    const next = commitTree(dir, tree, who, { append: true, message: 'Fix x' });
+    expect(next.parent).toBe(first.commit);
+    expect(git(dir, 'rev-list', '--count', 'public/main')).toBe('2');
+    expect(git(dir, 'log', '-1', '--format=%s', 'public/main')).toBe('Fix x');
+    expect(() => commitTree(dir, tree, who, { append: true, branch: 'public/other', message: 'x' })).toThrow(/does not exist/);
+  });
+
   // In the development repository only: the committed tree passes every check. (A public clone has no overlay
   // source, so there is nothing to build there.)
   it.skipIf(!fs.existsSync(path.join(ROOT, '.git')) || spawnSync('git', ['cat-file', '-e', 'HEAD:packaging/public'], { cwd: ROOT }).status !== 0)('this repository: the public tree built from HEAD has no problems', () => {

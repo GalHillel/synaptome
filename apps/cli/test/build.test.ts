@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PRODUCT } from '@synaptome/core';
+import { npmCliScript } from '../src/commands/upgrade';
 
 // The built distribution, exercised the way a user runs it: a plain `node <launcher>`, no tsx, no repository env.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -29,7 +30,7 @@ const run = (args: string[], input?: string) => {
 };
 
 /** npm, run through the Node that runs the tests (no shell, no PATH lookup). */
-const NPM_CLI = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+const NPM_CLI = npmCliScript() ?? (() => { throw new Error('npm-cli.js not found for this Node'); })();
 // Asynchronous: long synchronous waits (build, npm) keep the test worker from answering vitest and trip its RPC timeout.
 const exec = (args: string[], cwd: string, env = cleanEnv()) => new Promise<{ status: number; stdout: string; stderr: string }>((resolve) => execFile(process.execPath, args, { cwd, env, encoding: 'utf8', maxBuffer: 32 << 20 }, (e: any, stdout, stderr) => resolve({ status: e ? (typeof e.code === 'number' ? e.code : 1) : 0, stdout, stderr })));
 const npm = (args: string[], cwd: string) => exec([NPM_CLI, ...args], cwd, cleanEnv({ npm_config_update_notifier: 'false' }));

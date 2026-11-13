@@ -36,10 +36,20 @@ export function locateInstallation(launcher = launcherPath()): Installation | nu
   return { pkgDir, prefix, layout, version: pkg.version };
 }
 
+/**
+ * npm's own script for the running Node, so npm can be run without a shell: beside `node.exe` on Windows, in
+ * `<prefix>/lib/node_modules` on Linux and macOS (where Node is `<prefix>/bin/node`). Null when neither exists.
+ */
+export function npmCliScript(execPath = process.execPath): string | null {
+  const dir = path.dirname(execPath);
+  for (const c of [path.join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js'), path.join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')]) if (fs.existsSync(c)) return path.resolve(c);
+  return null;
+}
+
 function npm(args: string[], cwd: string) {
-  const cli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const cli = npmCliScript();
   const env = { ...process.env, npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false' };
-  if (fs.existsSync(cli)) return spawnSync(process.execPath, [cli, ...args], { cwd, encoding: 'utf8', env });
+  if (cli) return spawnSync(process.execPath, [cli, ...args], { cwd, encoding: 'utf8', env });
   // Only when npm's script is not beside Node: through the shell, so every argument must be free of shell syntax (T-06).
   const bad = args.find((a) => /["&|<>^%!`$;]/.test(a));
   if (bad) throw new CliError(`"${bad}" contains characters that cannot be passed to npm safely here`, EXIT.usage, 'use a package file path or a plain version spec such as synaptome@0.3.0');
