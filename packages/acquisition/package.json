@@ -1,0 +1,8 @@
+{
+  "name": "@synaptome/acquisition",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@synaptome/core": "*", "@synaptome/discovery": "*", "@synaptome/security": "*", "@synaptome/adapters": "*", "@synaptome/connectors": "*" }
+}

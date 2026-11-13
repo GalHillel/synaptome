@@ -1,0 +1,11 @@
+{
+  "name": "@synaptome/service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@synaptome/core": "*", "@synaptome/acquisition": "*", "@synaptome/adapters": "*", "@synaptome/connectors": "*", "@synaptome/discovery": "*",
+    "@synaptome/evaluation": "*", "@synaptome/forge": "*", "@synaptome/router": "*", "@synaptome/workflow": "*", "@synaptome/providers": "*", "@synaptome/agents": "*"
+  }
+}

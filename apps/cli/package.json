@@ -1,0 +1,25 @@
+{
+  "name": "@synaptome/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "synaptome": "./bin/synaptome.mjs", "drelqavo": "./bin/drelqavo.mjs" },
+  "dependencies": {
+    "@synaptome/acquisition": "*",
+    "@synaptome/command-center": "*",
+    "@synaptome/adapters": "*",
+    "@synaptome/core": "*",
+    "@synaptome/connectors": "*",
+    "@synaptome/discovery": "*",
+    "@synaptome/evaluation": "*",
+    "@synaptome/forge": "*",
+    "@synaptome/mcp-server": "*",
+    "@synaptome/router": "*",
+    "@synaptome/service": "*",
+    "@synaptome/terminal-workbench": "*",
+    "@synaptome/workflow": "*",
+    "@synaptome/providers": "*",
+    "@synaptome/agents": "*",
+    "commander": "^12.1.0"
+  }
+}

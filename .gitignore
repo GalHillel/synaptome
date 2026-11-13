@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.synaptome-dev/
+.synaptome-dev.*/
+# data and bridge files written under the previous product name; kept on disk, never tracked
+.drelqavo-dev/
+/.drelqavo-bridge.json
+.tmp/
+*.log
+.DS_Store
+coverage/
+.claude-flow/
+.swarm/
+# project-scoped bridge written by `synaptome bridge init .` (contains machine-specific paths)
+/.mcp.json
+/.claude/
+/.synaptome-bridge.json

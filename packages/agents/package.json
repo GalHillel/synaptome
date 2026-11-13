@@ -1,0 +1,8 @@
+{
+  "name": "@synaptome/agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@synaptome/core": "*", "@synaptome/providers": "*", "@synaptome/workflow": "*" }
+}
