@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Synaptome finds skills, agents and MCP servers, audits them before anything runs, installs only what you approve, and routes each task to the few that fit. Local-first, open source.">
+<title>Synaptome — a local capability layer for AI coding hosts</title>
+<link rel="icon" href="assets/mark.svg">
+<style>:root { --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif; --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, "SF Mono", Menlo, monospace; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --t-xs: 11px; --t-sm: 12px; --t-base: 13px; --t-md: 14px; --t-lg: 16px; --t-xl: 20px; --t-2xl: 28px; --radius: 2px; --row: 30px; --ease: cubic-bezier(.2,.7,.2,1); }
+:root, :root[data-theme="light"] { --paper: #f6f3ec; --surface: #fbf9f4; --sunken: #efebe1; --raised: #ffffff; --ink: #1f1d1a; --ink-2: #55514a; --ink-3: #655f55; --rule: #dcd6c8; --rule-strong: #b9b2a1; --accent: #8a5a2b; --accent-ink: #6e4520; --accent-wash: #efe4d3; --ok: #55682f; --warn: #7d5508; --danger: #8c2f2a; --info: #3f5566; --ok-wash: #e6ead7; --warn-wash: #f2e6c8; --danger-wash: #f1dcd8; --select: #e9e1cf; --focus: #8a5a2b; --shadow: 0 1px 0 rgba(31,29,26,.04), 0 8px 24px rgba(31,29,26,.10); }
+:root[data-theme="dark"] { --paper: #171614; --surface: #1d1c19; --sunken: #121110; --raised: #262420; --ink: #e9e4d8; --ink-2: #b6af9f; --ink-3: #9c9587; --rule: #33302a; --rule-strong: #4c483f; --accent: #c9925a; --accent-ink: #dba873; --accent-wash: #2e261c; --ok: #9fae72; --warn: #d2a24c; --danger: #d57f74; --info: #93abbc; --ok-wash: #23281a; --warn-wash: #2c2515; --danger-wash: #2e1c19; --select: #2d2a23; --focus: #c9925a; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.45); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme]) { --paper: #171614; --surface: #1d1c19; --sunken: #121110; --raised: #262420; --ink: #e9e4d8; --ink-2: #b6af9f; --ink-3: #9c9587; --rule: #33302a; --rule-strong: #4c483f; --accent: #c9925a; --accent-ink: #dba873; --accent-wash: #2e261c; --ok: #9fae72; --warn: #d2a24c; --danger: #d57f74; --info: #93abbc; --ok-wash: #23281a; --warn-wash: #2c2515; --danger-wash: #2e1c19; --select: #2d2a23; --focus: #c9925a; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.45); } }</style>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <a class="brand" href="#"><img src="assets/mark.svg" alt="" width="28" height="28"> <span>SYNAPT<b>O</b>ME</span></a>
+  <nav aria-label="Sections"><a href="#how">How it works</a><a href="#safety">Safety</a><a href="#install">Install</a><a href="#status">Status</a></nav>
+</header>
+
+<main id="main">
+  <section class="hero">
+    <p class="kicker">Pre-release · open source · runs on your machine</p>
+    <h1>One intelligence layer.<br>Every capability.</h1>
+    <p class="lede">Synaptome finds skills, agents and MCP servers in public sources, audits each one as untrusted
+      input before anything can run, installs only what you approve, and routes each task to the few that fit — so your
+      AI coding host reads short summaries instead of everything you have installed.</p>
+    <p class="actions"><a class="btn primary" href="#install">Install</a><a class="btn" href="https://github.com/GalHillel/synaptome">Source</a></p>
+    <figure class="shot"><img src="assets/screens/web-overview.jpg" width="800" height="499" alt="The Web Command Center overview: capabilities, pending approvals, installs, discovery sources and recent activity."></figure>
+  </section>
+
+  <section id="how" class="grid">
+    <h2>How it works</h2>
+    <article><h3>Discover</h3><p>Nine sources — GitHub, the official MCP registry, npm, PyPI, GitLab, official skill repositories, curated lists and the skills already on your machine — each read within its terms, backoff and daily budget.</p></article>
+    <article><h3>Vet</h3><p>Everything downloaded is quarantined and audited: prompt injection, hidden characters, pipe-to-shell, exfiltration, licences, permissions. Executable content always needs a person.</p></article>
+    <article><h3>Install, with a way back</h3><p>Into a sandbox copy of the host first. A real install needs explicit confirmation, never overwrites what Synaptome did not create, and can always be rolled back exactly.</p></article>
+    <article><h3>Route</h3><p>A connected project asks which capabilities fit a task and gets short summaries within a token budget — and nothing at all for trivial prompts.</p></article>
+    <article><h3>Improve</h3><p>The Skill Forge turns a gap into a tested skill and promotes it only on held-out evidence from an independent author.</p></article>
+    <article><h3>Three interfaces, one state</h3><p>A terminal workbench, a web command center on loopback, and a CLI with JSON output. A change in one appears in the others.</p></article>
+  </section>
+
+  <section class="gallery" aria-label="Screens">
+    <figure><img src="assets/screens/tui-overview.png" loading="lazy" width="1499" height="770" alt="The Terminal Workbench in Windows Terminal: views on the left, the registry overview, discovery sources and diagnostics."><figcaption>Terminal Workbench</figcaption></figure>
+    <figure><img src="assets/screens/web-graph.jpg" loading="lazy" width="800" height="499" alt="The capability graph: capabilities clustered by domain."><figcaption>Capability graph</figcaption></figure>
+    <figure><img src="assets/screens/web-routing.jpg" loading="lazy" width="800" height="499" alt="The Routing Explorer: routed tasks, how many capabilities were selected, and capability gaps."><figcaption>Routing Explorer</figcaption></figure>
+    <figure><img src="assets/screens/web-library.jpg" loading="lazy" width="800" height="499" alt="The capability library: name, kind, domain, status, tier, quality and installation."><figcaption>Capability library</figcaption></figure>
+  </section>
+
+  <section id="safety" class="prose">
+    <h2>Safety, stated plainly</h2>
+    <ul>
+      <li>Downloaded content is never executed by Synaptome and never read as instructions.</li>
+      <li>Global Claude Code configuration is never changed; connecting a project writes only into that project.</li>
+      <li>The dashboard listens on loopback, needs a per-start token sent in a header, and refuses foreign origins and Host names.</li>
+      <li>Upgrades keep the previous version and a copy of your data; rollback never silently drops newer data.</li>
+      <li>Every threat and its control is written down with the test that proves it: <a href="https://github.com/GalHillel/synaptome/blob/main/docs/THREAT_MODEL.md">threat model</a>.</li>
+    </ul>
+  </section>
+
+  <section id="install" class="prose">
+    <h2>Install</h2>
+    <p>Requires Node.js 24 or later.</p>
+    <pre><code>npm install -g synaptome
+synaptome init
+synaptome            # Terminal Workbench
+synaptome dashboard  # Web Command Center</code></pre>
+    <p><a href="https://github.com/GalHillel/synaptome/blob/main/docs/QUICKSTART.md">Quick start in fifteen steps</a> · <a href="https://github.com/GalHillel/synaptome/blob/main/docs/INSTALL.md">Install, upgrade and uninstall</a></p>
+  </section>
+
+  <section id="status" class="prose">
+    <h2>Status</h2>
+    <p>Version 0.2.0 is a pre-release. Windows is the tested platform, including a clean install from npm; on macOS and Linux
+      the test suite passes in CI, and a real install there is not yet verified. Executable capability content is never tested dynamically, so it always needs approval. Of the model
+      providers, only headless Claude Code is verified by a live call. What works and what does not, with evidence:
+      <a href="https://github.com/GalHillel/synaptome/blob/main/docs/ACCEPTANCE_MATRIX.md">acceptance matrix</a>.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <p>Synaptome is open source under the Apache License 2.0. <a href="https://github.com/GalHillel/synaptome/blob/main/SECURITY.md">Report a vulnerability</a>.</p>
+</footer>
+</body>
+</html>
