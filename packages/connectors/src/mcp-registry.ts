@@ -59,19 +59,44 @@ export function createMcpRegistryConnector(opts: { fetchImpl?: FetchLike; base?:
     async search(req: SearchRequest): Promise<SearchResult> {
       const cursor = { next: '', lastIncremental: '', ...(req.cursor ?? {}) };
       const notes: string[] = [];
-      const params = new URLSearchParams({ limit: String(Math.min(100, Math.max(1, req.limit))), version: 'latest' });
-      if (req.query) params.set('search', req.query);
-      else if (req.mode === 'incremental') params.set('updated_since', cursor.lastIncremental || new Date(Date.now() - 7 * 864e5).toISOString());
-      else if (cursor.next) params.set('cursor', cursor.next);
-      const r = await get(`/v0/servers?${params}`);
-      const drafts = r.servers.map(toDraft).filter((d): d is CandidateDraft => !!d);
-      if (req.mode === 'broad' && !req.query) {
-        cursor.next = r.metadata?.nextCursor ?? '';
-        notes.push(cursor.next ? 'registry walk continues from the stored cursor on the next broad scan' : 'reached the end of the registry; next broad scan restarts');
+      // Walks pages (up to 100 entries each) until the requested number of items, the end of the registry, or the
+      // per-scan request cap (plan NG, M1: one small first page per scan made the registry look like 15 servers).
+      const wanted = Math.max(1, req.limit);
+      const maxRequests = 20;
+      const startedAt = new Date().toISOString();
+      const drafts: CandidateDraft[] = [];
+      let entries = 0;
+      let requests = 0;
+      let pageCursor = req.query || req.mode === 'incremental' ? '' : cursor.next;
+      let ended = false;
+      const seenCursors = new Set<string>();
+      const seenIds = new Set<string>();
+      while (drafts.length < wanted && requests < maxRequests) {
+        if (pageCursor && seenCursors.has(pageCursor)) break; // a registry that repeats a cursor would loop forever
+        if (pageCursor) seenCursors.add(pageCursor);
+        const params = new URLSearchParams({ limit: String(Math.min(100, Math.max(1, wanted - drafts.length))), version: 'latest' });
+        if (req.query) params.set('search', req.query);
+        if (req.mode === 'incremental' && !req.query) params.set('updated_since', cursor.lastIncremental || new Date(Date.now() - 7 * 864e5).toISOString());
+        if (pageCursor) params.set('cursor', pageCursor);
+        const r = await get(`/v0/servers?${params}`);
+        requests++;
+        entries += r.servers.length;
+        for (const d of r.servers.map(toDraft)) if (d && !seenIds.has(d.externalId)) seenIds.add(d.externalId), drafts.push(d);
+        pageCursor = r.metadata?.nextCursor ?? '';
+        if (!pageCursor || !r.servers.length) {
+          ended = true;
+          break;
+        }
       }
-      if (req.mode === 'incremental') cursor.lastIncremental = new Date().toISOString();
-      notes.push(`${r.servers.length} entries returned, ${drafts.length} active latest versions kept`);
-      return { drafts, cursor, notes, requests: 1 };
+      if (req.mode === 'broad' && !req.query) {
+        cursor.next = ended ? '' : pageCursor;
+        notes.push(ended ? 'reached the end of the registry; the next broad scan starts from the beginning' : 'registry walk continues from the stored cursor on the next broad scan');
+      }
+      // Incremental: the next window starts when this one started, and only once every page was read.
+      if (req.mode === 'incremental' && !req.query && ended) cursor.lastIncremental = startedAt;
+      if (req.mode === 'incremental' && !ended) notes.push('more updates than this scan could read; the next incremental scan repeats the same window');
+      notes.push(`${requests} page(s), ${entries} entries returned, ${drafts.length} active latest versions kept`);
+      return { drafts, cursor, notes, requests, stoppedEarly: !ended && req.mode !== 'broad' ? 'item or request limit reached before the end of the updates' : undefined };
     },
 
     async fetchPackage(c) {

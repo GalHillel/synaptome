@@ -365,10 +365,15 @@ async function executeStep(sys: Sys, runId: string, def: WorkflowDefinition, s: 
         ac.abort('timeout');
         reject(new StepError(`timed out after ${timeoutMs} ms`));
       }, timeoutMs);
-      ac.signal.addEventListener('abort', () => reject(new StepError(ac.signal.reason === 'timeout' ? `timed out after ${timeoutMs} ms` : 'cancelled', false)), { once: true });
+      // A timeout is retryable under the step's retry policy (it used to end the step at once, retry or not); a
+      // cancellation never is. The retry itself waits for the timed-out attempt to stop (below).
+      ac.signal.addEventListener('abort', () => reject(ac.signal.reason === 'timeout' ? new StepError(`timed out after ${timeoutMs} ms`, true) : new StepError('cancelled', false)), { once: true });
     });
+    // The attempt itself, kept so a retry can wait for it to end after a timeout (no two attempts at once; audit W3).
+    const attemptRun = Promise.resolve().then(() => runner({ sys, runId, step: s, attempt, input, signal: ac.signal, approval, log }));
+    attemptRun.catch(() => undefined);
     try {
-      const out = await Promise.race([runner({ sys, runId, step: s, attempt, input, signal: ac.signal, approval, log }), stop]);
+      const out = await Promise.race([attemptRun, stop]);
       if ('waiting' in out) {
         setStep(sys, runId, s.id, { status: 'waiting', error: out.waiting });
         emit(sys.db, 'workflow.step-waiting', runId, { step: s.id, reason: out.waiting });
@@ -388,6 +393,8 @@ async function executeStep(sys: Sys, runId: string, def: WorkflowDefinition, s: 
       const message = e?.message ?? String(e);
       const retryable = !(e instanceof StepError) || e.retryable;
       if (!retryable || n === tries) return fail(message, attempt);
+      // Before another attempt, the previous one must have stopped (its signal is aborted; give it up to 30 s).
+      if (ac.signal.aborted) await Promise.race([attemptRun.then(() => undefined, () => undefined), sleep(30_000, controller.signal).catch(() => undefined)]);
       const wait = (s.retry?.backoffMs ?? 1000) * 2 ** (n - 1);
       log(`attempt ${attempt} failed (${message}); retrying in ${wait} ms`);
       emit(sys.db, 'workflow.step-retrying', runId, { step: s.id, attempt, error: message, waitMs: wait });

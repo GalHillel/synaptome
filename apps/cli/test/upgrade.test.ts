@@ -1,5 +1,7 @@
 import { execFile, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -130,4 +132,45 @@ describe('upgrade and rollback of an installed copy', () => {
     expect((await run('--json', 'doctor')).code).toBe(0);
     expect((await run('--json', 'upgrade', '--status')).json.records.at(-1)).toMatchObject({ status: 'failed-restored', from: PRODUCT.version });
   }, 180_000);
+
+  // Backported from D-057 (0.2.1 hotfix). A local registry serves the package document and files, so npm's own integrity
+  // check runs as against npmjs.org; npm's cache is a scratch folder.
+  it('an upgrade npm rejects (integrity) still ends with a copy that starts; an upgrade that installs other bytes than the version asked for is undone', async () => {
+    const sri = (f: string) => `sha512-${crypto.createHash('sha512').update(fs.readFileSync(f)).digest('base64')}`;
+    let doc: any = {};
+    const server = http.createServer((req, res) => {
+      if (req.url === `/${PRODUCT.bin}`) return res.setHeader('content-type', 'application/json'), res.end(JSON.stringify(doc));
+      const m = /^\/-\/([^/]+\.tgz)$/.exec(req.url ?? '');
+      if (m && fs.existsSync(path.join(work, m[1]))) return res.setHeader('content-type', 'application/octet-stream'), res.end(fs.readFileSync(path.join(work, m[1])));
+      res.statusCode = 404;
+      res.end('{}');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const reg = `http://127.0.0.1:${(server.address() as any).port}/`;
+    const manifest = JSON.parse(fs.readFileSync(path.join(work, 'next', 'package.json'), 'utf8'));
+    const entry = (version: string, file: string, integrity = sri(file)) => ({ ...manifest, version, dist: { tarball: `${reg}-/${path.basename(file)}`, integrity } });
+    const runReg = async (...args: string[]) => {
+      const r = await exec([launcher(), '--home', home, ...args], { cwd: os.tmpdir(), env: { ...env, npm_config_registry: reg, npm_config_cache: path.join(work, 'npm-cache'), npm_config_update_notifier: 'false', SYNAPTOME_CLAUDE_ROOT: path.join(work, 'no-claude') } });
+      return { code: r.status, out: r.stdout.trim(), err: r.stderr, json: (() => { try { return JSON.parse(r.stdout); } catch { return null; } })() };
+    };
+    try {
+      const forged = `sha512-${crypto.createHash('sha512').update('bytes that were never published').digest('base64')}`;
+      doc = { name: PRODUCT.bin, 'dist-tags': { latest: '0.2.97' }, versions: { '0.2.97': entry('0.2.97', tarballs.next, forged) } };
+      for (let i = 0; i < 3; i++) {
+        const viaNpm = await runReg('--json', 'upgrade', `${PRODUCT.bin}@0.2.97`);
+        expect(viaNpm.code, viaNpm.out + viaNpm.err).toBe(1);
+        expect(viaNpm.json.error.message).toMatch(/failed and was undone: npm install synaptome@0\.2\.97 failed.*integrity/is);
+        const after = await runReg('--version');
+        expect(after.out, `${viaNpm.json.error.message}\n${after.err}`).toBe(PRODUCT.version);
+      }
+      doc = { name: PRODUCT.bin, 'dist-tags': { latest: '0.2.96' }, versions: { '0.2.96': entry('0.2.96', tarballs.current) } };
+      const wrong = await runReg('--json', 'upgrade', `${PRODUCT.bin}@0.2.96`);
+      expect(wrong.code, wrong.out + wrong.err).toBe(1);
+      expect(wrong.json.error.message).toContain(`npm installed version ${PRODUCT.version}, not the requested 0.2.96`);
+      expect((await runReg('--version')).out).toBe(PRODUCT.version);
+      expect((await runReg('--json', 'doctor')).code).toBe(0);
+    } finally {
+      server.close();
+    }
+  }, 300_000);
 });

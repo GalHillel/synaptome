@@ -33,9 +33,12 @@ const credential = (spec: ProviderSpec, env: NodeJS.ProcessEnv) => spec.credenti
 /** Never let a credential reach an error message, even if a server echoes it back. */
 const scrub = (s: string, secret: string | null) => (secret ? s.split(secret).join('[redacted]') : s);
 
-async function postJson(f: Fetch, url: string, headers: Record<string, string>, body: unknown, timeoutMs: number, secret: string | null) {
+async function postJson(f: Fetch, url: string, headers: Record<string, string>, body: unknown, timeoutMs: number, secret: string | null, cancel?: AbortSignal) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
+  // Cancellation from the caller ends the request too (plan NG, M1; audit W1).
+  if (cancel?.aborted) ac.abort();
+  else cancel?.addEventListener('abort', () => ac.abort(), { once: true });
   try {
     const res = await f(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ac.signal });
     const text = await res.text();
@@ -48,7 +51,7 @@ async function postJson(f: Fetch, url: string, headers: Record<string, string>, 
     if (!res.ok) return { ok: false as const, error: scrub(`HTTP ${res.status}: ${String(json?.error?.message ?? text).slice(0, 300)}`, secret) };
     return { ok: true as const, json };
   } catch (e: any) {
-    return { ok: false as const, error: scrub(ac.signal.aborted ? `timed out after ${timeoutMs} ms` : `request failed: ${e?.message ?? e}`, secret) };
+    return { ok: false as const, error: scrub(cancel?.aborted ? 'cancelled' : ac.signal.aborted ? `timed out after ${timeoutMs} ms` : `request failed: ${e?.message ?? e}`, secret) };
   } finally {
     clearTimeout(t);
   }
@@ -69,7 +72,7 @@ export function anthropicProvider(opts: { model: string; env?: NodeJS.ProcessEnv
       const key = credential(spec, env);
       const started = Date.now();
       if (!key) return { ok: false, text: '', error: `no credential (${spec.credentialEnv[0]})`, ms: 0 };
-      const r = await postJson(f, `${opts.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, { 'x-api-key': key, 'anthropic-version': '2023-06-01' }, { model: opts.model, max_tokens: req.maxTokens ?? 2048, ...(req.system ? { system: req.system } : {}), messages: [{ role: 'user', content: req.prompt }] }, req.timeoutMs ?? 180_000, key);
+      const r = await postJson(f, `${opts.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, { 'x-api-key': key, 'anthropic-version': '2023-06-01' }, { model: opts.model, max_tokens: req.maxTokens ?? 2048, ...(req.system ? { system: req.system } : {}), messages: [{ role: 'user', content: req.prompt }] }, req.timeoutMs ?? 180_000, key, req.signal);
       if (!r.ok) return { ok: false, text: '', error: r.error, ms: Date.now() - started };
       const text = (r.json?.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
       return { ok: true, text, raw: { id: r.json?.id, model: r.json?.model, stop: r.json?.stop_reason }, ms: Date.now() - started, usage: { inputTokens: r.json?.usage?.input_tokens ?? 0, outputTokens: r.json?.usage?.output_tokens ?? 0 } };
@@ -105,7 +108,7 @@ export function openAICompatibleProvider(opts: { id: 'openai' | 'ollama'; baseUr
       if (!opts.model) return { ok: false, text: '', error: 'no model configured', ms: 0 };
       if (spec.credentialEnv.length && !key) return { ok: false, text: '', error: `no credential (${spec.credentialEnv[0]})`, ms: 0 };
       const messages = [...(req.system ? [{ role: 'system', content: req.system }] : []), { role: 'user', content: req.prompt }];
-      const r = await postJson(f, `${url}/chat/completions`, key ? { authorization: `Bearer ${key}` } : {}, { model: opts.model, messages, max_tokens: req.maxTokens ?? 2048 }, req.timeoutMs ?? 180_000, key);
+      const r = await postJson(f, `${url}/chat/completions`, key ? { authorization: `Bearer ${key}` } : {}, { model: opts.model, messages, max_tokens: req.maxTokens ?? 2048 }, req.timeoutMs ?? 180_000, key, req.signal);
       if (!r.ok) return { ok: false, text: '', error: r.error, ms: Date.now() - started };
       return { ok: true, text: String(r.json?.choices?.[0]?.message?.content ?? ''), raw: { model: r.json?.model, finish: r.json?.choices?.[0]?.finish_reason }, ms: Date.now() - started, usage: { inputTokens: r.json?.usage?.prompt_tokens ?? 0, outputTokens: r.json?.usage?.completion_tokens ?? 0 } };
     },
@@ -130,7 +133,7 @@ export function geminiProvider(opts: { model: string | null; env?: NodeJS.Proces
       if (!opts.model) return { ok: false, text: '', error: 'no model configured', ms: 0 };
       if (!key) return { ok: false, text: '', error: `no credential (${spec.credentialEnv[0]})`, ms: 0 };
       const body = { contents: [{ role: 'user', parts: [{ text: req.prompt }] }], ...(req.system ? { systemInstruction: { parts: [{ text: req.system }] } } : {}), generationConfig: { maxOutputTokens: req.maxTokens ?? 2048 } };
-      const r = await postJson(f, `${opts.baseUrl ?? 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(opts.model)}:generateContent`, { 'x-goog-api-key': key }, body, req.timeoutMs ?? 180_000, key);
+      const r = await postJson(f, `${opts.baseUrl ?? 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(opts.model)}:generateContent`, { 'x-goog-api-key': key }, body, req.timeoutMs ?? 180_000, key, req.signal);
       if (!r.ok) return { ok: false, text: '', error: r.error, ms: Date.now() - started };
       const text = (r.json?.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? '').join('');
       return { ok: true, text, raw: { finish: r.json?.candidates?.[0]?.finishReason }, ms: Date.now() - started, usage: { inputTokens: r.json?.usageMetadata?.promptTokenCount ?? 0, outputTokens: r.json?.usageMetadata?.candidatesTokenCount ?? 0 } };

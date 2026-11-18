@@ -279,7 +279,7 @@ export interface ModelProvider {
   id: string;
   title: string;
   availability(): Promise<{ available: boolean; authenticated: boolean; detail: string }>;
-  complete(req: { prompt: string; system?: string; cwd?: string; timeoutMs?: number; extraArgs?: string[]; maxTokens?: number }): Promise<{ ok: boolean; text: string; error?: string; raw?: unknown; ms: number; usage?: { inputTokens: number; outputTokens: number } }>;
+  complete(req: { prompt: string; system?: string; cwd?: string; timeoutMs?: number; extraArgs?: string[]; maxTokens?: number; /** Cancels the call: a running model process is stopped with its whole process tree. */ signal?: AbortSignal }): Promise<{ ok: boolean; text: string; error?: string; raw?: unknown; ms: number; usage?: { inputTokens: number; outputTokens: number } }>;
 }
 
 export interface EvalCase {

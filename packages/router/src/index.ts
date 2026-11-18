@@ -267,8 +267,21 @@ export function activate(sys: Sys, input: { capabilityId: string; decisionId?: n
   if (!el.ok) throw new ActivationError('not-eligible', `${cap.id} cannot be activated: ${el.reason}`);
   const entry = readCapabilityEntry(sys, cap.id);
   if (!entry) throw new ActivationError('not-found', `${cap.id} has no readable entry file`);
-  const activationId = Number(sys.db.run('INSERT INTO activations (decision_id, capability_id, host, reason, served_bytes, served_at) VALUES (?,?,?,?,?,?)', input.decisionId ?? null, cap.id, input.host, input.reason ?? null, Buffer.byteLength(entry.content), nowIso()).lastInsertRowid);
-  emit(sys.db, 'capability.activated', cap.id, { activationId, decisionId: input.decisionId ?? null, host: input.host, bytes: Buffer.byteLength(entry.content) });
+  // A load is credited to a routing decision only if that decision selected this capability (audit H2); otherwise it
+  // is still recorded, without the decision, and the reason says why, so no decision is credited with a load it did
+  // not make.
+  let decisionId = input.decisionId ?? null;
+  let reason = input.reason ?? null;
+  if (decisionId != null) {
+    const d = sys.db.get<{ selected: string }>('SELECT selected FROM route_decisions WHERE id=?', decisionId);
+    const selected = d ? pj<{ capabilityId: string }[]>(d.selected, []).map((s) => s.capabilityId) : [];
+    if (!selected.includes(cap.id)) {
+      reason = `${reason ? `${reason}; ` : ''}${d ? `not selected by decision #${decisionId}` : `decision #${decisionId} does not exist`}`;
+      decisionId = null;
+    }
+  }
+  const activationId = Number(sys.db.run('INSERT INTO activations (decision_id, capability_id, host, reason, served_bytes, served_at) VALUES (?,?,?,?,?,?)', decisionId, cap.id, input.host, reason, Buffer.byteLength(entry.content), nowIso()).lastInsertRowid);
+  emit(sys.db, 'capability.activated', cap.id, { activationId, decisionId, requestedDecisionId: input.decisionId ?? null, host: input.host, bytes: Buffer.byteLength(entry.content) });
   return {
     activationId,
     capability: { id: cap.id, name: cap.name, kind: cap.kind, trust: cap.trust, tier: cap.tier },
@@ -284,7 +297,19 @@ export function recordOutcome(sys: Sys, input: { decisionId?: number | null; act
   const where = input.activationId ? 'id = ?' : 'decision_id = ?';
   const key = input.activationId ?? input.decisionId;
   if (key == null) throw new Error('recordOutcome needs a decisionId or an activationId');
-  const r = sys.db.run(`UPDATE activations SET outcome=?, outcome_detail=?, outcome_at=? WHERE ${where}`, input.outcome, (input.detail ?? '').slice(0, 2000), nowIso(), key);
+  const at = nowIso();
+  const detail = (input.detail ?? '').slice(0, 2000);
+  const r = sys.db.run(`UPDATE activations SET outcome=?, outcome_detail=?, outcome_at=? WHERE ${where}`, input.outcome, detail, at, key);
+  // The outcome is also kept on the decision itself, so it is not lost when nothing was loaded (audit H1). It is the
+  // reporter's statement; whether it is verified is decided elsewhere from independent evidence.
+  if (input.decisionId != null) {
+    const d = sys.db.get<{ analysis: string }>('SELECT analysis FROM route_decisions WHERE id=?', input.decisionId);
+    if (d) {
+      const analysis = pj<any>(d.analysis, {});
+      analysis.outcome = { value: input.outcome, detail, at, activations: Number(r.changes), evidence: 'reported' };
+      sys.db.run('UPDATE route_decisions SET analysis=? WHERE id=?', JSON.stringify(analysis), input.decisionId);
+    }
+  }
   emit(sys.db, 'route.outcome', String(input.decisionId ?? input.activationId), { outcome: input.outcome, activations: Number(r.changes) });
   return Number(r.changes);
 }

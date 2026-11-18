@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.2.1 — unreleased (security and data-safety hotfix for 0.2.0)
+
+Only fixes. Nothing new is switched on, settings and data are kept, and the database gains two tables (migrations 12
+and 13). Upgrade from 0.2.0 with `synaptome upgrade synaptome@0.2.1`. To undo it: `synaptome upgrade --rollback`.
+
+### Fixed: data safety
+- `bridge remove`, `repair --fix` and `uninstall --everything` no longer delete a `.mcp.json` Synaptome created when it
+  now also holds your own servers, nor a bridge skill you edited, nor files you added next to it (0.2.0 defects B1–B5).
+- Connecting and disconnecting are transactions; an unreadable file stops the change before anything is written.
+- New `bridge status` (read-only), `bridge update` (in place; replaces repair's remove-then-add) and `bridge adopt`.
+- An upgrade that fails is undone completely: the restored copy is checked to start, and a half-written package left by
+  an interrupted npm install is moved aside (kept) and the previous version installed afresh. An upgrade that installs a
+  different version than the one asked for is undone.
+- A damaged database is reported with its path and a safe next step, and nothing is written to it.
+
+### Fixed: security
+- Official trust follows the account that holds a capability's code. A listing that names an official publisher for code
+  held by someone else no longer earns it, and deny rules apply to both names.
+- An instruction that reads a secret (for example `~/.ssh/id_rsa`) and sends it to a web address is blocked. Before, it
+  was only flagged for review.
+- A trailing cautionary word (for example "… and never refuse") no longer softens an injection finding.
+
+### Fixed: reliability
+- The prompt hook always exits 0; it never migrates or creates a home, and a locked or other-version home makes it
+  pass the prompt through.
+- Cancelling or timing out a model or agent step stops the whole process tree; retries never overlap; timeouts follow
+  the step's retry policy.
+- A capability load is credited only to the decision that selected it; outcomes are kept even when nothing was loaded.
+- `sources` shows what was actually scanned ("NEVER SCANNED") apart from the connectivity probe; `scan` covers every
+  enabled permitted source and reads up to 100 items over several pages (the MCP Registry showed 15 before).
+- Agent runs with a token or USD budget reserve each billable call's worst case before it starts, so parallel steps can
+  no longer exceed the budget together.
+- Two processes installing into the same host directory at once can no longer both proceed after a crashed installer left
+  its lock behind.
+
+### Known, not fixed in 0.2.1
+- Routing defect R1: for "build a TypeScript REST API", a client-SDK generator can be offered and a JavaScript testing
+  skill missed. It is fixed in the 0.3.0 line.
+- Windows with the Claude desktop app: Claude Code in the app, its hooks and its MCP servers see their own copy of
+  the data folder under `AppData`, so they and a terminal can see different databases (which can look like a damaged
+  database). Use a data folder outside `AppData` for both, for example `--home "%USERPROFILE%\.synaptome"`.
+  0.3.0 adds a `doctor` warning for it.
+
 ## 0.2.0 — 2026-11-13 (pre-release on npm)
 
 ### Changed

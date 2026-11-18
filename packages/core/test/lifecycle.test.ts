@@ -104,7 +104,7 @@ describe('schema v2', () => {
 
       const s = openSystem(home);
       try {
-        expect(s.db.get<{ v: number }>('SELECT MAX(version) v FROM schema_migrations')!.v).toBe(MIGRATIONS.length);
+        expect(s.db.get<{ v: number }>('SELECT MAX(version) v FROM schema_migrations')!.v).toBe(Math.max(...MIGRATIONS.map((m) => m.version)));
         expect(fs.readdirSync(path.join(home, 'backups')).some((f) => /-pre-v2-/.test(f))).toBe(true);
         expect(capabilityHistory(s, 'legacy.comms')).toEqual([expect.objectContaining({ from: null, to: 'approved', by: 'migration' })]);
         for (const t of ['dependencies', 'notifications', 'source_checks', 'capability_transitions']) expect(s.db.get('SELECT name FROM sqlite_master WHERE name = ?', t)).toBeTruthy();

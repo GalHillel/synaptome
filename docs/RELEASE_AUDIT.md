@@ -63,7 +63,8 @@ has not decided otherwise (decision D-030):
   created private and empty; the local remote `public` pushes only `public/main` → `main`, no tags.
 - **Pushed (owner-approved, 2026-11-13).** Later public commits go on top with `--append` and are pushed as fast-forwards.
 - **Public (owner-approved, 2026-11-13);** private vulnerability reporting enabled; anonymous clone verified.
-- **Next, each separately approved:** npm, release, site. Every push sends `public/main` alone (`git push public`, no tags) and so
+- **npm** `synaptome@0.2.0` (published by the owner) and **GitHub release** `v0.2.0` done (2026-11-13).
+- **Site** on GitHub Pages (`gh-pages` branch), 2026-11-13. All gated steps are done. Every push sends `public/main` alone (`git push public`, no tags) and so
   carries none of the private history.
 
 ## Gated steps after the decision (each needs the owner's approval)

@@ -1,6 +1,6 @@
 {
   "name": "synaptome",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Synaptome — local-first AI capability operating system",
   "repository": {
@@ -29,7 +29,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "synaptome": "node apps/cli/bin/synaptome.mjs",
     "build": "node --disable-warning=ExperimentalWarning --import tsx scripts/build.ts",
-    "ci": "node scripts/ci.mjs"
+    "ci": "node scripts/ci.mjs",
+    "test:blackbox": "vitest run -c vitest.blackbox.config.ts"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",

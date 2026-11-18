@@ -8,7 +8,7 @@ import { createApi, runDiagnostics } from '@synaptome/service';
 import { snapshotProvider } from '@synaptome/core';
 import { CliError, type Ctx, EXIT, action, kv } from '../ctx';
 import { depsFor } from './acquisition';
-import { bridgeInit, bridgeRemove, bridgedProjects, launcherPath } from './routing';
+import { bridgeInit, bridgeRemove, bridgeStatus, bridgeUpdate, bridgedProjects, launcherPath } from './routing';
 
 /**
  * Installation lifecycle on this machine (Phase 10): `init` sets up and verifies, `repair` finds and fixes what drifted,
@@ -159,18 +159,15 @@ async function repair(ctx: Ctx, fix: boolean) {
       add({ area: 'project', item: b.dir, problem: 'the bridge record is gone from the project (removed by hand?)', fix: 'forget the project' }, () => void emit(sys.db, 'bridge.removed', b.dir, { by: 'repair' }));
       continue;
     }
-    const m = JSON.parse(fs.readFileSync(path.join(b.dir, PRODUCT.bridgeFile), 'utf8'));
-    const mcp = fs.existsSync(m.mcpPath) ? JSON.parse(fs.readFileSync(m.mcpPath, 'utf8')) : null;
+    const state = bridgeStatus(b.dir);
     const problems = [
-      !fs.existsSync(m.skillPath) && 'bridge skill missing',
-      !mcp?.mcpServers?.[PRODUCT.mcpName] && 'MCP server entry missing',
+      ...state.parts.filter((p) => p.state === 'missing').map((p) => `${p.name} missing`),
       b.launcher && !fs.existsSync(b.launcher) && `launcher ${b.launcher} no longer exists`,
       b.launcher && path.resolve(b.launcher) !== path.resolve(launcherPath()) && fs.existsSync(launcherPath()) && `points at another installation (${b.launcher})`,
+      state.format === 1 && 'recorded in the old format (no ownership hashes)',
     ].filter(Boolean) as string[];
-    if (problems.length) add({ area: 'project', item: b.dir, problem: problems.join('; '), fix: 'reconnect it to this installation (remove exactly what was added, add it again)' }, () => {
-      bridgeRemove(sys, b.dir);
-      bridgeInit(sys, b.dir, { hook: !!m.hook });
-    });
+    // Updated in place, part by part: anything the user changed in the project is kept (never remove-then-add).
+    if (problems.length) add({ area: 'project', item: b.dir, problem: problems.join('; '), fix: 'update the bridge in place for this installation (parts you changed are kept)' }, () => void bridgeUpdate(sys, b.dir));
   }
 
   const open = found.filter((f) => !f.fixed);
@@ -236,8 +233,8 @@ export async function uninstallEverything(ctx: Ctx, opts: { yes?: boolean; delet
   }
   for (const b of projects) {
     try {
-      bridgeRemove(sys, b.dir);
-      done.projects.push({ dir: b.dir, result: 'disconnected' });
+      const r = bridgeRemove(sys, b.dir);
+      done.projects.push({ dir: b.dir, result: r.kept.length ? `disconnected; kept what you changed: ${r.kept.join(', ')}` : 'disconnected' });
     } catch (e: any) {
       done.projects.push({ dir: b.dir, result: `kept: ${e.message}` });
     }

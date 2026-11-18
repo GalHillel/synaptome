@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type EvalCase, type EvalCaseResult, type EvaluationRunner, type ModelProvider, type Sys, emit, j, nowIso, pj } from '@synaptome/core';
+import { type EvalCase, type EvalCaseResult, type EvaluationRunner, type ModelProvider, type Sys, emit, j, killProcessTree, nowIso, pj, treeKillable } from '@synaptome/core';
 
 /* ---------- deterministic grading ---------- */
 
@@ -118,7 +118,7 @@ process.once('exit', () => {
   for (const d of modelWorkDirs) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function run(cmd: string, args: string[], input: string | null, timeoutMs: number, cwd?: string): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+function run(cmd: string, args: string[], input: string | null, timeoutMs: number, cwd?: string, signal?: AbortSignal): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean; aborted?: boolean }> {
   return new Promise((resolve) => {
     // Synaptome's own model calls must not be routed by Synaptome's own prompt hook (a project with the bridge would
     // otherwise record gaps and decisions for the forge's and agents' internal prompts). The hook exits on this flag.
@@ -126,23 +126,33 @@ function run(cmd: string, args: string[], input: string | null, timeoutMs: numbe
     // by the caller; model and program validated, T-06), so they are passed as one command line rather than an array
     // with `shell: true`, which Node deprecates (DEP0190).
     const env = { ...process.env, SYNAPTOME_INTERNAL_CALL: '1' };
-    const child = process.platform === 'win32' ? spawn([cmd, ...args].join(' '), { cwd, shell: true, windowsHide: true, env }) : spawn(cmd, args, { cwd, windowsHide: true, env });
+    const child = process.platform === 'win32' ? spawn([cmd, ...args].join(' '), { cwd, shell: true, windowsHide: true, env }) : spawn(cmd, args, { cwd, windowsHide: true, env, ...treeKillable });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let aborted = false;
+    // Timeout and cancellation stop the whole process tree (on Windows the direct child is cmd.exe, not claude).
     const t = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      killProcessTree(child);
     }, timeoutMs);
+    const onAbort = () => {
+      aborted = true;
+      killProcessTree(child);
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
     child.on('error', (e) => {
       clearTimeout(t);
-      resolve({ code: -1, stdout, stderr: String(e), timedOut });
+      signal?.removeEventListener('abort', onAbort);
+      resolve({ code: -1, stdout, stderr: String(e), timedOut, aborted });
     });
     child.on('close', (code) => {
       clearTimeout(t);
-      resolve({ code, stdout, stderr, timedOut });
+      signal?.removeEventListener('abort', onAbort);
+      resolve({ code, stdout, stderr, timedOut, aborted });
     });
     if (input != null) child.stdin.end(input);
     else child.stdin.end();
@@ -210,8 +220,9 @@ export function claudeCliProvider(opts: { model?: string; exec?: typeof run; bin
         fs.writeFileSync(f, req.system);
         args.push('--append-system-prompt-file', q(f));
       }
-      const r = await exec(bin, args, req.prompt, req.timeoutMs ?? 180000, req.cwd ?? (wantsTools ? undefined : workDir()));
+      const r = await exec(bin, args, req.prompt, req.timeoutMs ?? 180000, req.cwd ?? (wantsTools ? undefined : workDir()), req.signal);
       const p = parse(r.stdout);
+      if (r.aborted || req.signal?.aborted) return { ok: false, text: '', error: 'cancelled', ms: Date.now() - started };
       if (r.timedOut) return { ok: false, text: '', error: 'timed out', ms: Date.now() - started };
       if (p.isError) return { ok: false, text: '', error: p.text.slice(0, 300) || r.stderr.slice(0, 300), raw: p.raw, ms: Date.now() - started };
       const u = p.raw?.usage;

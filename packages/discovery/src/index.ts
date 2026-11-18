@@ -54,6 +54,20 @@ export interface SourceInfo {
   lastScanAt: string | null;
   lastOkAt: string | null;
   candidates: number;
+  /**
+   * What has actually been fetched, kept apart from the connectivity probe (plan NG, M1; audit S1): a source whose
+   * health check passed but which has never completed a scan is "never-scanned", not working.
+   */
+  scanState: 'never-scanned' | 'failed-only' | 'partial-only' | 'complete';
+  /** Whether the source's terms allow automated access ("blocked" sources are never contacted). */
+  access: 'allowed' | 'blocked';
+  /** Why access is blocked (the robots.txt or terms clause), when it is. */
+  accessBasis: string | null;
+  scans: number;
+  lastAttemptAt: string | null;
+  lastCompleteAt: string | null;
+  lastPartialAt: string | null;
+  lastError: string | null;
 }
 export function listSources(sys: Sys, reg: ConnectorRegistry): SourceInfo[] {
   syncSources(sys, reg);
@@ -63,8 +77,25 @@ export function listSources(sys: Sys, reg: ConnectorRegistry): SourceInfo[] {
       id: c.id, kind: c.kind, title: c.title, description: c.description, official: c.official, enabled: !!r.enabled, health: r.health,
       healthDetail: r.health_detail, rate: pj(r.rate, null), lastScanAt: r.last_scan_at, lastOkAt: r.last_ok_at,
       candidates: sys.db.get<{ n: number }>('SELECT COUNT(*) n FROM candidates WHERE source_id=?', c.id)!.n,
+      ...scanStateOf(sys, c.id),
+      access: c.terms && !c.terms.allowed ? 'blocked' : 'allowed',
+      accessBasis: c.terms && !c.terms.allowed ? c.terms.basis : null,
     };
   });
+}
+
+/** A source's scan record, from the scan history (not from the health probe). */
+export function scanStateOf(sys: Sys, sourceId: string) {
+  const s = sys.db.get<any>(
+    `SELECT COUNT(*) scans, MAX(started_at) lastAttemptAt,
+            MAX(CASE WHEN status='completed' THEN finished_at END) lastCompleteAt,
+            MAX(CASE WHEN status='partial' THEN finished_at END) lastPartialAt
+       FROM scan_runs WHERE source_id=? AND status != 'skipped'`,
+    sourceId,
+  )!;
+  const lastError = sys.db.get<{ error: string | null }>("SELECT error FROM scan_runs WHERE source_id=? AND error IS NOT NULL ORDER BY id DESC LIMIT 1", sourceId)?.error ?? null;
+  const scanState: SourceInfo['scanState'] = s.lastCompleteAt ? 'complete' : s.lastPartialAt ? 'partial-only' : s.scans ? 'failed-only' : 'never-scanned';
+  return { scanState, scans: Number(s.scans), lastAttemptAt: s.lastAttemptAt ?? null, lastCompleteAt: s.lastCompleteAt ?? null, lastPartialAt: s.lastPartialAt ?? null, lastError };
 }
 
 export async function checkSourceHealth(sys: Sys, c: DiscoveryConnector, opts: { now?: Date } = {}) {

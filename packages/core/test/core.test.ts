@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   type Sys, emit, eventsSince, getCapability, getSettings, hashFiles, listCapabilities, normalizedHash, openSystem, overview, relate, relationsOf,
-  safeRel, setSetting, snapshotProvider, upsertCapability, writeSnapshot,
+  safeRel, setSetting, snapshotProvider, upsertCapability, writeSnapshot, MIGRATIONS,
 } from '../src/index';
 
 const homes: string[] = [];
@@ -44,7 +44,9 @@ describe('core', () => {
     const home = sys.home;
     sys.close();
     const again = openSystem(home);
-    expect(again.db.get<{ n: number }>('SELECT COUNT(*) n FROM schema_migrations')!.n).toBe(v);
+    // Versions need not be contiguous (the 0.2.1 hotfix has 1-9, 12, 13): every migration once, the newest is the max.
+    expect(again.db.get<{ n: number }>('SELECT COUNT(*) n FROM schema_migrations')!.n).toBe(MIGRATIONS.length);
+    expect(v).toBe(Math.max(...MIGRATIONS.map((m) => m.version)));
     again.close();
   });
 

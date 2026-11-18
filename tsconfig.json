@@ -13,6 +13,6 @@
     "esModuleInterop": true,
     "types": ["node"]
   },
-  "include": ["packages/*/src", "apps/*/src", "packages/*/test", "apps/*/test"],
+  "include": ["packages/*/src", "apps/*/src", "packages/*/test", "apps/*/test", "tests"],
   "exclude": ["node_modules", "**/dist"]
 }

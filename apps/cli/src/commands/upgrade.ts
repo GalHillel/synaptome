@@ -20,7 +20,7 @@ export interface Installation { pkgDir: string; prefix: string; layout: 'local' 
 export interface UpgradeRecord {
   from: string; to: string | null; spec: string; fromSchema: number; toSchema: number | null;
   previousPackage: string; dbBackup: string; eventsBefore: number; eventsAfter: number | null;
-  prefix: string; layout: 'local' | 'global'; at: string; status: 'started' | 'completed' | 'failed-restored' | 'rolled-back'; detail?: string;
+  prefix: string; layout: 'local' | 'global'; at: string; status: 'started' | 'completed' | 'failed-restored' | 'failed-unrestored' | 'rolled-back'; detail?: string;
 }
 
 /** Where this copy is installed: `<prefix>/node_modules/synaptome/`. Null when it runs from a source checkout. */
@@ -55,8 +55,19 @@ function npm(args: string[], cwd: string) {
   if (bad) throw new CliError(`"${bad}" contains characters that cannot be passed to npm safely here`, EXIT.usage, 'use a package file path or a plain version spec such as synaptome@0.3.0');
   return spawnSync(['npm', ...args.map((a) => (/\s/.test(a) ? `"${a}"` : a))].join(' '), { cwd, encoding: 'utf8', env, shell: true });
 }
-function npmInstall(inst: Installation, spec: string) {
-  const r = npm(['install', ...(inst.layout === 'global' ? ['--global'] : []), '--prefix', inst.prefix, spec, '--no-audit', '--no-fund'], inst.prefix);
+/** Moves a folder, across volumes too (copy, then remove the original only after the copy exists). */
+function moveDir(from: string, to: string) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  try {
+    fs.renameSync(from, to);
+  } catch (e: any) {
+    if (e?.code !== 'EXDEV') throw e;
+    fs.cpSync(from, to, { recursive: true });
+    fs.rmSync(from, { recursive: true, force: true });
+  }
+}
+function npmInstall(inst: Installation, spec: string, extra: string[] = []) {
+  const r = npm(['install', ...(inst.layout === 'global' ? ['--global'] : []), '--prefix', inst.prefix, spec, '--no-audit', '--no-fund', ...extra], inst.prefix);
   if (r.status !== 0) throw new Error(`npm install ${spec} failed: ${(r.stderr || r.stdout || r.error?.message || '').trim().split('\n').slice(-3).join(' ')}`);
 }
 /** Runs the installed copy (whatever version is there now) against this home. */
@@ -118,7 +129,8 @@ export function registerUpgrade(program: Command) {
     );
 }
 
-async function upgrade(ctx: Ctx, inst: Installation, spec: string, records: UpgradeRecord[]) {
+/** `expect`: the exact version the install must produce (a package file verified against its published integrity, for example). */
+export async function upgrade(ctx: Ctx, inst: Installation, spec: string, records: UpgradeRecord[], opts: { expect?: string } = {}) {
   const sys = ctx.sys;
   const specArg = fs.existsSync(spec) ? path.resolve(spec) : spec;
   const versions = path.join(sys.home, 'versions');
@@ -141,6 +153,9 @@ async function upgrade(ctx: Ctx, inst: Installation, spec: string, records: Upgr
     const v = runInstalled(inst, sys.home, ['--version']);
     rec.to = v.stdout.trim();
     if (v.status !== 0 || !rec.to) throw new Error(`the new version does not start: ${v.stderr.trim().slice(0, 300)}`);
+    // An exact version was asked for: anything else installed (a registry whose metadata points at other bytes) is a failure, not an upgrade.
+    const asked = opts.expect ?? (spec.startsWith(`${PRODUCT.bin}@`) ? spec.slice(PRODUCT.bin.length + 1) : null);
+    if (asked && /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(asked) && rec.to !== asked) throw new Error(`npm installed version ${rec.to}, not the requested ${asked}`);
     const d = runInstalled(inst, sys.home, ['--json', 'doctor']);
     if (d.status !== 0) throw new Error(`the new version's doctor failed: ${(d.stdout + d.stderr).trim().slice(0, 300)}`);
   } catch (e: any) {
@@ -153,23 +168,44 @@ async function upgrade(ctx: Ctx, inst: Installation, spec: string, records: Upgr
   if (problem) {
     // 3. Put everything back: the previous package, and the database copy if the new version migrated it.
     let detail = problem;
-    try {
-      npmInstall(inst, previousPackage);
-    } catch (e: any) {
-      detail += `; reinstalling ${inst.version} also failed (${e.message}); it is kept at ${previousPackage}`;
+    // npm can stop half way through writing the package (an integrity failure, a dropped connection, a full disk) and
+    // then consider the same version "already installed", even with --force. The restored copy must start and report
+    // the previous version; if it does not, the half-written folder is moved aside (kept under <home>/versions) so
+    // npm has to write the saved package afresh, and the outcome is stated as it is.
+    const restored = () => runInstalled(inst, sys.home, ['--version']).stdout.trim() === inst.version;
+    let ok = false;
+    for (const attempt of ['reinstall', 'fresh'] as const) {
+      if (attempt === 'fresh') {
+        const aside = path.join(versions, `half-written-${Date.now()}`);
+        try {
+          moveDir(inst.pkgDir, aside);
+          detail += `; the half-written package folder was moved to ${aside}`;
+        } catch (e: any) {
+          detail += `; could not move the half-written package folder aside (${e.message})`;
+          break;
+        }
+      }
+      try {
+        npmInstall(inst, previousPackage);
+      } catch (e: any) {
+        detail += `; reinstalling ${inst.version} failed (${e.message})`;
+      }
+      if ((ok = restored())) break;
+      if (attempt === 'reinstall') detail += `; the reinstalled ${inst.version} did not start`;
     }
+    if (!ok) detail += `; reinstall it with: npm install ${inst.layout === 'global' ? '--global ' : ''}--prefix "${inst.prefix}" "${previousPackage}"`;
     if (schemaOf(sys.db) > rec.fromSchema) {
       sys.close();
       const aside = restoreDatabase(dbFile, dbBackup, backupsDir);
       detail += `; database restored from before the upgrade (the migrated one is kept at ${aside})`;
     }
-    rec.status = 'failed-restored';
+    rec.status = ok ? 'failed-restored' : 'failed-unrestored';
     rec.detail = detail;
     saveRecords(home, records);
     const db = new Db(dbFile);
     emit(db, 'system.upgrade-failed', spec, { from: rec.from, detail });
     db.close();
-    throw new CliError(`Upgrade to ${spec} failed and was undone: ${detail}`, EXIT.error);
+    throw new CliError(ok ? `Upgrade to ${spec} failed and was undone: ${detail}` : `Upgrade to ${spec} failed and the previous version could not be put back: ${detail}`, EXIT.error);
   }
 
   // The new version may have migrated the database; read the facts from a fresh connection.
@@ -185,7 +221,7 @@ async function upgrade(ctx: Ctx, inst: Installation, spec: string, records: Upgr
   );
 }
 
-function rollbackUpgrade(ctx: Ctx, inst: Installation, records: UpgradeRecord[], discardNewer: boolean) {
+export function rollbackUpgrade(ctx: Ctx, inst: Installation, records: UpgradeRecord[], discardNewer: boolean) {
   const sys = ctx.sys;
   const rec = [...records].reverse().find((r) => r.status === 'completed');
   if (!rec) throw new CliError('No completed upgrade to roll back', EXIT.notFound, `see the history with: ${PRODUCT.bin} upgrade --status`);

@@ -116,15 +116,23 @@ describe('GitHub connector', () => {
 describe('MCP registry connector', () => {
   const entry = (name: string, status = 'active') => ({ server: { name, description: 'd', version: '1.2.0', repository: { url: 'https://github.com/o/r' }, remotes: [{ type: 'streamable-http', url: 'https://x', headers: [{ isSecret: true }] }] }, _meta: { 'io.modelcontextprotocol.registry/official': { status, updatedAt: '2026-10-01T00:00:00Z' } } });
   it('normalizes active entries, walks the registry by cursor and treats records as metadata only', async () => {
-    const { impl, calls } = fakeFetch([[/\/v0\/servers/, () => ({ body: { servers: [entry('io.acme/files'), entry('io.gone/x', 'deleted')], metadata: { nextCursor: 'CUR' } } })]]);
+    // Two pages, then the end. One scan with room for both walks both; a scan with room for one stops at the cursor.
+    const { impl, calls } = fakeFetch([
+      [/cursor=CUR/, () => ({ body: { servers: [entry('io.acme/db')], metadata: {} } })],
+      [/\/v0\/servers/, () => ({ body: { servers: [entry('io.acme/files'), entry('io.gone/x', 'deleted')], metadata: { nextCursor: 'CUR' } } })],
+    ]);
     const c = createMcpRegistryConnector({ fetchImpl: impl });
-    const r = await c.search({ mode: 'broad', limit: 10 });
+    const all = await c.search({ mode: 'broad', limit: 10 });
+    expect(all.drafts.map((d) => d.externalId)).toEqual(['io.acme/files', 'io.acme/db']);
+    expect(all.cursor.next).toBe(''); // reached the end
+    expect(all.requests).toBe(2);
+    const r = await c.search({ mode: 'broad', limit: 1 });
     expect(r.drafts).toHaveLength(1);
     expect(r.drafts[0]).toMatchObject({ kind: 'mcp-server', externalId: 'io.acme/files', repo: 'o/r', upstreamVersion: '1.2.0', publisher: 'io.acme' });
     expect(r.drafts[0].signals).toMatchObject({ needsSecret: true, remotes: 1 });
     expect(r.cursor.next).toBe('CUR');
     await c.search({ mode: 'broad', limit: 10, cursor: r.cursor });
-    expect(calls[1]).toMatch(/cursor=CUR/);
+    expect(calls.at(-1)).toMatch(/cursor=CUR/);
     const pkg = await c.fetchPackage({ externalId: 'io.acme/files', raw: r.drafts[0].raw });
     expect(pkg.files[0].path).toBe('server.json');
     expect(pkg.skipped[0].reason).toMatch(/not fetched or reviewed/);

@@ -5,7 +5,7 @@
 export const PRODUCT = {
   name: 'Synaptome',
   bin: 'synaptome',
-  version: '0.2.0',
+  version: '0.2.1',
   tagline: 'One intelligence layer. Every capability. Always evolving.',
   /** Environment variables are `${envPrefix}_<NAME>`. */
   envPrefix: 'SYNAPTOME',

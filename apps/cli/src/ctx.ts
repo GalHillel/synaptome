@@ -1,5 +1,6 @@
+import path from 'node:path';
 import type { Command } from 'commander';
-import { type Sys, env, openSystem, setOrigin } from '@synaptome/core';
+import { PRODUCT, type Sys, env, openSystem, pathsFor, resolveHome, setOrigin } from '@synaptome/core';
 
 /** Stable exit codes (documented in docs/INTERFACES.md). */
 export const EXIT = { ok: 0, error: 1, usage: 2, blocked: 3, notFound: 4, unavailable: 5 } as const;
@@ -15,6 +16,26 @@ export interface Ctx {
   json: boolean;
   /** Prints machine output when --json is set, otherwise the human rendering. */
   out(data: unknown, human: () => string): void;
+}
+
+/**
+ * SQLite reports a damaged file as "malformed" (SQLITE_CORRUPT, 11) or "not a database" (SQLITE_NOTADB, 26). Say which
+ * file, that nothing was changed, and that the folder must be copied before anything is tried: the main file often
+ * still opens without its write-ahead log, and every repair attempt changes the files.
+ */
+export function damagedDatabase(e: any, home?: string): CliError | null {
+  if (e?.code !== 'ERR_SQLITE_ERROR' || (e.errcode !== 11 && e.errcode !== 26)) return null;
+  let dbFile: string = PRODUCT.dbFile;
+  try {
+    dbFile = pathsFor(resolveHome(home)).db;
+  } catch {
+    /* keep the bare name */
+  }
+  return new CliError(
+    `The ${PRODUCT.name} database ${dbFile} is damaged (SQLite: ${e.errstr ?? e.message}). Nothing was changed.`,
+    EXIT.error,
+    `copy the whole folder ${path.dirname(dbFile)} somewhere safe before anything else; do not delete the ${PRODUCT.dbFile}-wal file. The main file may still open without its write-ahead log (try it on the copy); pre-upgrade and daily copies, if any, are in its backups folder`,
+  );
 }
 
 /** Wraps a command action: opens the system, renders errors consistently, sets the exit code. */
@@ -35,7 +56,8 @@ export function action<A extends any[]>(fn: (ctx: Ctx, ...args: A) => Promise<vo
         },
       };
       await fn(ctx, ...(args as unknown as A)); // commander passes (...positionals, options, command)
-    } catch (e: any) {
+    } catch (err: any) {
+      const e = damagedDatabase(err, g.home) ?? err;
       const code = e instanceof CliError ? e.code : EXIT.error;
       const payload = { ok: false, error: { code, message: e?.message ?? String(e), hint: e?.hint, data: e?.data } };
       if (json) process.stdout.write(JSON.stringify(payload, null, 2) + '\n');

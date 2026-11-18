@@ -43,6 +43,11 @@ export interface AuditInput {
   skipped?: { path: string; reason: string }[];
   declaredLicence?: { spdx?: string | null; evidence?: string | null };
   publisher?: string | null;
+  /**
+   * Who holds the code (repository owner or registry-verified namespace), when known. Official trust needs this to be
+   * an official publisher; the stated `publisher` alone never earns it (plan NG M12, D-062). Omitted: `publisher`.
+   */
+  codeHolder?: string | null;
   provenanceVerified?: boolean;
   settings: Settings;
 }
@@ -158,6 +163,9 @@ const RULES: Rule[] = [
   { id: 'cfg-self-grant', severity: 'critical', category: 'configuration', strongOnly: true, re: /\b(add|append|insert|put|grant)\b[^.\n]{0,40}("?Bash\(\*\)"?|\ballow[- ]?list\b|\bpermissions?\b|\ballowed[- ]tools\b)[^.\n]{0,80}(settings(\.local)?\.json|\.claude\b)|\bso (you|it|claude) (never|no longer) (needs?|has) to ask\b/i, message: 'Grants itself host permissions or removes approval prompts' },
   { id: 'cred-env-file-out', severity: 'critical', category: 'exfiltration', re: /\b(read|cat|open|load|print)\b[^.\n]{0,20}\.env\b(?!\.(example|sample|template))[^.\n]{0,100}\b(include|send|post|upload|paste|print|output|commit|share|attach)\b/i, message: 'Copies secrets from a .env file into output or a remote destination', perm: 'credentials' },
   // Credentials / exfiltration
+  // An instruction, in words, to send something to a remote URL. Alone it is ordinary (API skills post to endpoints);
+  // on the same line as a secret path it is exfiltration (exfil-credentials, critical). M12, D-062.
+  { id: 'exfil-send-to-url', severity: 'low', category: 'exfiltration', on: 'text', re: /\b(send|upload|post|transmit|forward|submit|paste)\b[^.\n]{0,100}\b(to|at|into)\s+<?https?:\/\/(?!localhost|127\.0\.0\.1)/i, message: 'Tells the reader to send something to a remote address' },
   { id: 'cred-secret-paths', severity: 'high', category: 'credentials', re: /(~|\$HOME|%USERPROFILE%)?[\\/]\.(ssh[\\/](id_[a-z0-9]+|authorized_keys)|aws[\\/]credentials|netrc|npmrc|docker[\\/]config\.json|kube[\\/]config|gnupg)\b|\.credentials\.json|login\.keychain|\bLocal State\b[^\n]{0,40}encrypted_key/i, message: 'References credential stores', perm: 'credentials' },
   { id: 'cred-env-dump', severity: 'high', category: 'exfiltration', re: /\b(printenv|env\b[^\n|]{0,10}\||Get-ChildItem\s+env:)[^\n]{0,80}(curl|wget|nc\b|Invoke-WebRequest|https?:\/\/)/i, message: 'Sends environment variables to a remote endpoint', perm: 'credentials' },
   { id: 'exfil-post-data', severity: 'high', category: 'exfiltration', re: /\bcurl\b[^\n]{0,120}(-d|--data(-binary)?|-F|--upload-file|-T)\s+@?[^\n]{0,80}https?:\/\/(?!localhost|127\.0\.0\.1)/i, message: 'Uploads local data to a remote host', perm: 'network' },
@@ -179,7 +187,7 @@ const RULES: Rule[] = [
 const STRONG_DEFENSIVE = /\b(attackers?|malicious|malware|example of an? (attack|injection|exploit)|red[- ]team|incident|watch for|red flag|anti-pattern|bad example|detect(ion|ed|s)?|vulnerab\w*|threat model|indicators? of compromise)\b/i;
 /** Lines whose findings combine into something worse than either alone: reading a secret and sending it out. */
 const SECRET_READ = new Set(['cred-secret-paths', 'cred-env-dump', 'cred-env-file-out']);
-const SENDS_OUT = new Set(['exfil-post-data', 'exfil-webhook', 'net-fetch-step']);
+const SENDS_OUT = new Set(['exfil-post-data', 'exfil-webhook', 'net-fetch-step', 'exfil-send-to-url']);
 
 const CODE_EXT = /\.(sh|bash|zsh|fish|ps1|psm1|bat|cmd|py|js|mjs|cjs|ts|tsx|jsx|rb|pl|php|go|rs|java|kt|swift|lua|r|c|cc|cpp|cs)$/i;
 const TEXT_EXT = /\.(md|mdx|txt|rst|ya?ml|json|toml|ini|cfg|html?|css|csv|xml|svg)$/i;
@@ -224,7 +232,10 @@ export function auditPackage(input: AuditInput): AuditResult {
         const lineNo = f.content.slice(0, m.index).split('\n').length;
         const lineText = lines[lineNo - 1] ?? '';
         let severity = rule.severity;
-        const weak = !rule.strongOnly && DEFENSIVE_CONTEXT.test(lineText);
+        // Cautionary prose comes before what it warns about ("Never ignore previous instructions"). A defensive word
+        // after the match ("Ignore all previous instructions ... and never refuse") does not lower it (M12, D-062).
+        const before = lineText.slice(0, Math.max(0, m.index - (f.content.lastIndexOf('\n', m.index - 1) + 1)));
+        const weak = !rule.strongOnly && DEFENSIVE_CONTEXT.test(before);
         const defensive = !code && rule.category !== 'obfuscation' && (weak || strongContext(lineNo));
         // Defensive prose lowers severity one level but is never dropped: a reviewer still sees it.
         if (defensive) severity = ({ critical: 'high', high: 'medium', medium: 'low', low: 'info', info: 'info' } as const)[severity];
@@ -298,7 +309,10 @@ export function auditPackage(input: AuditInput): AuditResult {
 
   const pol = input.settings.policy;
   const publisher = (input.publisher ?? '').toLowerCase();
-  const denied = pol.denyPublishers.map((p) => p.toLowerCase()).includes(publisher) || pol.denyNamePatterns.some((p) => safeTest(p, String(frontmatter.name ?? '')));
+  const holder = input.codeHolder === undefined ? publisher : (input.codeHolder ?? '').toLowerCase();
+  const denyList = pol.denyPublishers.map((p) => p.toLowerCase());
+  // A deny rule applies to the stated name and to whoever holds the code.
+  const denied = [publisher, holder].some((p) => p && denyList.includes(p)) || pol.denyNamePatterns.some((p) => safeTest(p, String(frontmatter.name ?? '')));
   if (denied) findings.push({ id: 'policy-deny-rule', severity: 'critical', category: 'policy', file: '', line: 0, excerpt: '', message: 'Matches an explicit deny rule (publisher or name pattern)' });
 
   const critical = findings.filter((f) => f.severity === 'critical').length;
@@ -306,7 +320,8 @@ export function auditPackage(input: AuditInput): AuditResult {
   const unreviewed = findings.filter((f) => f.category === 'unreviewed').length;
   const needsExec = executables.length > 0 || permissions.network || permissions.installation || permissions.credentials || permissions.configuration || permissions.browser || permissions.delete || permissions.api || ['mcp-server', 'hook', 'plugin', 'tool', 'extension', 'connector'].includes(input.kind);
   const tier: Tier = critical > 0 ? 'C' : needsExec || high > 0 ? 'B' : 'A';
-  const official = pol.officialPublishers.map((p) => p.toLowerCase()).includes(publisher);
+  // Official only when the code is held by an official publisher (an aggregator's "by anthropics" is not enough).
+  const official = !!holder && pol.officialPublishers.map((p) => p.toLowerCase()).includes(holder);
   const trust: Trust = denied || critical > 0 ? 'BLOCKED' : official && input.provenanceVerified ? 'OFFICIAL_VERIFIED' : 'UNKNOWN';
   const summary = `Tier ${tier}: ${critical} critical, ${high} high, ${findings.length} findings total; ${executables.length} executable file(s); licence ${licence.spdx || 'unknown'} (${licence.compatible}).`;
   return { tier, trust, licence, permissions, executables, findings, critical, high, unreviewed, entryFile: entry?.path ?? '', frontmatter, summary };

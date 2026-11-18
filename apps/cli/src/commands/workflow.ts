@@ -54,9 +54,24 @@ export async function execute(ctx: { sys: Sys; json: boolean }, runId: string): 
     }
   };
   const timer = setInterval(print, 300);
+  // Ctrl+C cancels the run cleanly: running steps are aborted (their processes stopped) and the run is recorded as
+  // cancelled, instead of being left "running" until its heartbeat goes stale (audit W7). A second Ctrl+C exits.
+  let interrupted = false;
+  const onSigint = () => {
+    if (interrupted) process.exit(130);
+    interrupted = true;
+    if (!ctx.json) process.stderr.write('\ncancelling (press Ctrl+C again to exit at once)...\n');
+    try {
+      cancelRun(ctx.sys, runId, 'cli');
+    } catch {
+      /* already finished */
+    }
+  };
+  process.on('SIGINT', onSigint);
   try {
     await guard(() => runWorkflow(ctx.sys, runId, { runners: runners(ctx.sys) }));
   } finally {
+    process.off('SIGINT', onSigint);
     clearInterval(timer);
     print();
   }

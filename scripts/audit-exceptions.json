@@ -1,0 +1,12 @@
+{
+  "_comment": "High or critical advisories accepted in development-only tooling (never in the shipped package). Each entry needs a reason and an expiry; an expired entry fails CI again. Runtime dependencies have no exceptions (npm audit --omit=dev must be clean). See D-046.",
+  "exceptions": [
+    {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "via": "vitest (dev only: vitest -> vite, tinyglobby, fdir -> picomatch)",
+      "reason": "ReDoS through crafted extglob patterns. Every published picomatch version is affected (no fixed release on 2026-11-17). Here picomatch only matches test-file globs written in this repository's own vitest configuration; no untrusted pattern reaches it, and it is not in the published bundle (dist/ contains no picomatch).",
+      "expires": "2026-12-17"
+    }
+  ]
+}

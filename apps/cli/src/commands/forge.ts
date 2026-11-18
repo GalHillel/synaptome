@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Command } from 'commander';
 import { type CaseKind, EvalSetError, type Split, addEvalCases, claudeCliProvider, evalSetSummary, importedRunner, listEvalCases, listEvals, modelRunner, removeEvalCase } from '@synaptome/evaluation';
 import { ForgeError, type ForgeCandidate, forgeAuthor, forgeAuthorHeldout, forgeCases, forgeDeprecate, forgeRollback, forgeCheck, forgeDecide, forgeEvaluate, forgeNew, forgeRevise, forgeVariants, getForge, listForge } from '@synaptome/forge';
-import { PRODUCT } from '@synaptome/core';
+import { PRODUCT, openForHook, resolveHome } from '@synaptome/core';
 import { recordHostContext, renderHostContext, routeTask } from '@synaptome/router';
 import { CliError, EXIT, action, kv, table } from '../ctx';
 import { depsFor } from './acquisition';
@@ -189,37 +189,67 @@ export function registerForge(program: Command) {
    */
   program
     .command('hook <event>')
-    .description('host hook entry point (user-prompt). Reads the hook JSON payload on stdin')
-    .action(
-      action(async (ctx, event: string) => {
-        if (event !== 'user-prompt') throw new CliError(`Unknown hook event "${event}"`, EXIT.usage);
-        // A model call Synaptome itself made (forge, agents, evaluation): never route our own prompts.
-        if (process.env.SYNAPTOME_INTERNAL_CALL === '1') return;
-        let raw = '';
-        for await (const chunk of process.stdin) raw += chunk;
-        let prompt = '';
-        try {
-          prompt = String(JSON.parse(raw).prompt ?? '');
-        } catch {
-          return; // not a hook payload: stay silent, never break the host
-        }
-        const started = performance.now();
-        // Host-added wrappers are not the user's words and must not steer routing.
-        const text = prompt.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ').trim();
-        if (text.length < 12 || text.startsWith('/')) return;
-        let d;
-        try {
-          d = routeTask(ctx.sys, text, { origin: 'hook' });
-        } catch {
-          return; // a routing failure must never block or disturb the user's prompt
-        }
-        // Summaries only. The full capability is loaded on demand, and only that load counts as an activation.
-        const fwd = (p: string) => p.replace(/\\/g, '/');
-        const launcher = process.argv[1] ? `node "${fwd(process.argv[1])}" --home "${fwd(ctx.sys.home)}"` : PRODUCT.bin;
-        const sent = renderHostContext(ctx.sys, d, { loadNote: `To load one: MCP tool get_capability, or run: ${launcher} activate <id> --decision ${d.id}` });
-        recordHostContext(ctx.sys, d.id, { injectedTokens: sent.tokens, injectedBytes: Buffer.byteLength(sent.text), offered: sent.offered, hookMs: Number((performance.now() - started).toFixed(1)) });
-        if (!sent.text) return; // nothing qualified: add nothing to the host's context
-        process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: sent.text } }) + '\n');
-      }),
-    );
+    .description('host hook entry point (user-prompt). Reads the hook JSON payload on stdin; always exits 0')
+    .action(async (event: string, _opts: unknown, cmd: Command) => {
+      // Fail-safe (plan NG, M1): a hook never blocks, delays or breaks the host's prompt. Whatever happens here, the
+      // exit code is 0 and nothing is printed except a valid result. Problems are noted in <home>/logs/hook.log.
+      const home: string | undefined = cmd.optsWithGlobals().home;
+      try {
+        await runPromptHook(event, home);
+      } catch (e: any) {
+        noteHookProblem(home, e?.message ?? String(e));
+      }
+      process.exitCode = 0;
+    });
+}
+
+/** Appends one line to the hook log in the home (kept to the last 200 lines); never throws. */
+function noteHookProblem(home: string | undefined, message: string) {
+  try {
+    const dir = path.join(resolveHome(home), 'logs');
+    if (!fs.existsSync(path.dirname(dir))) return; // no home: nothing to note into, and nothing is created
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'hook.log');
+    const lines = (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : []).slice(-199);
+    lines.push(`${new Date().toISOString()} ${message.replace(/\s+/g, ' ').slice(0, 500)}`);
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+  } catch {
+    /* the log is best effort */
+  }
+}
+
+async function runPromptHook(event: string, home: string | undefined) {
+  if (event !== 'user-prompt') return; // unknown events are ignored, not errors: a host may send newer ones
+  // A model call Synaptome itself made (forge, agents, evaluation): never route our own prompts.
+  if (process.env.SYNAPTOME_INTERNAL_CALL === '1') return;
+  let raw = '';
+  for await (const chunk of process.stdin) raw += chunk;
+  let prompt = '';
+  try {
+    prompt = String(JSON.parse(raw).prompt ?? '');
+  } catch {
+    return; // not a hook payload: stay silent, never break the host
+  }
+  const started = performance.now();
+  // Host-added wrappers are not the user's words and must not steer routing.
+  const text = prompt.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ').trim();
+  if (text.length < 12 || text.startsWith('/')) return;
+  // Never creates, migrates or backs up anything; a missing, locked or other-version home means "say nothing".
+  const sys = openForHook(home, { busyMs: 250 });
+  if (!sys) {
+    noteHookProblem(home, 'home missing, locked, or written by another version; prompt passed through unrouted');
+    return;
+  }
+  try {
+    const d = routeTask(sys, text, { origin: 'hook' });
+    // Summaries only. The full capability is loaded on demand, and only that load counts as an activation.
+    const fwd = (p: string) => p.replace(/\\/g, '/');
+    const launcher = process.argv[1] ? `node "${fwd(process.argv[1])}" --home "${fwd(sys.home)}"` : PRODUCT.bin;
+    const sent = renderHostContext(sys, d, { loadNote: `To load one: MCP tool get_capability, or run: ${launcher} activate <id> --decision ${d.id}` });
+    recordHostContext(sys, d.id, { injectedTokens: sent.tokens, injectedBytes: Buffer.byteLength(sent.text), offered: sent.offered, hookMs: Number((performance.now() - started).toFixed(1)) });
+    if (!sent.text) return; // nothing qualified: add nothing to the host's context
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: sent.text } }) + '\n');
+  } finally {
+    sys.close();
+  }
 }

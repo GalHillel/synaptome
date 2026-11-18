@@ -1,4 +1,5 @@
 export * from './db';
+export * from './proc';
 export * from './schema';
 export * from './registry';
 export * from './text';

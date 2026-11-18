@@ -10,9 +10,13 @@ export function registerSystem(program: Command) {
     .action(
       action((ctx) => {
         const o = overview(ctx.sys);
-        ctx.out({ product: PRODUCT.name, version: PRODUCT.version, home: ctx.sys.home, ...o }, () =>
+        // Which copy is running: the development checkout and an installed package keep separate homes.
+        const installation = (globalThis as any).__SYNAPTOME_INSTALL__ ?? { kind: 'unknown', root: null };
+        const copy = installation.kind === 'development' ? `development checkout (${installation.root})` : installation.kind === 'package' ? `installed package (${installation.root})` : 'unknown';
+        ctx.out({ product: PRODUCT.name, version: PRODUCT.version, home: ctx.sys.home, installation, ...o }, () =>
           [
             `${PRODUCT.name} ${PRODUCT.version}   home: ${ctx.sys.home}`,
+            `running from: ${copy}`,
             '',
             kv([
               ['capabilities', `${o.capabilities.total}  ${fmt(o.capabilities.byStatus)}`],

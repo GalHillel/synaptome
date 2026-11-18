@@ -125,7 +125,7 @@ export function registerDiscovery(program: Command) {
 
   program
     .command('sources')
-    .description('discovery sources, their health and policy status')
+    .description('discovery sources: access, connectivity and what has actually been scanned (a passing probe is not a scan)')
     .option('--check', 'probe each source now')
     .action(
       action(async (ctx, opts: { check?: boolean }) => {
@@ -133,14 +133,21 @@ export function registerDiscovery(program: Command) {
         syncSources(ctx.sys, reg);
         if (opts.check) for (const c of reg.list()) await checkSourceHealth(ctx.sys, c);
         const rows = listSources(ctx.sys, reg);
-        ctx.out(rows, () => table(rows.map((r) => ({ ...r, official: r.official ? 'yes' : '', enabled: r.enabled ? 'yes' : 'no', detail: r.healthDetail ?? '' })), [{ key: 'id' }, { key: 'kind' }, { key: 'official' }, { key: 'enabled' }, { key: 'health' }, { key: 'candidates', title: 'cand.' }, { key: 'lastScanAt', title: 'last scan', max: 20 }, { key: 'detail', max: 70 }]));
+        const scanText = (r: (typeof rows)[number]) => (r.scanState === 'never-scanned' ? 'NEVER SCANNED' : r.scanState === 'failed-only' ? `failed (${r.scans} attempt${r.scans === 1 ? '' : 's'})` : r.scanState === 'partial-only' ? `partial only, ${r.lastPartialAt?.slice(0, 16)}` : `complete, ${r.lastCompleteAt?.slice(0, 16)}`);
+        ctx.out(rows, () =>
+          [
+            table(rows.map((r) => ({ ...r, enabled: r.enabled ? 'yes' : 'no', probe: r.access === 'blocked' ? 'not contacted' : r.health, scanned: scanText(r), detail: r.access === 'blocked' ? (r.accessBasis ?? r.healthDetail ?? 'terms disallow automated access') : r.lastError ?? r.healthDetail ?? '' })), [{ key: 'id' }, { key: 'enabled' }, { key: 'access' }, { key: 'probe', title: 'connectivity' }, { key: 'scanned', title: 'scans', max: 32 }, { key: 'candidates', title: 'items' }, { key: 'detail', max: 60 }]),
+            '',
+            'connectivity is a probe of the source; "scans" is what was actually fetched. Scan every enabled source: synaptome scan',
+          ].join('\n'),
+        );
       }),
     );
 
   program
     .command('scan')
     .description('discover capabilities (broad, incremental, or need-driven)')
-    .option('-s, --source <id...>', 'limit to these sources (default: github and mcp-registry)')
+    .option('-s, --source <id...>', 'limit to these sources (default: every enabled source whose terms allow access, except the local inventory)')
     .option('-m, --mode <mode>', 'broad | incremental | need', 'broad')
     .option('-q, --query <text>', 'search text (implies --mode need unless a mode is given)')
     .option('--repo <owner/name>', 'inspect one GitHub repository directly')
@@ -154,7 +161,9 @@ export function registerDiscovery(program: Command) {
         if (opts.repo && !/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) throw new CliError(`Invalid --repo "${opts.repo}"`, EXIT.usage, 'expected owner/name');
         const reg = buildConnectorRegistry(ctx.sys);
         syncSources(ctx.sys, reg);
-        const ids = opts.repo ? ['github'] : opts.source ?? ['github', 'mcp-registry'];
+        // Default: every enabled source that may be contacted (audit S1: the old default scanned only two, so the others
+        // stayed "never scanned" while looking healthy). The local host inventory has its own command (inventory).
+        const ids = opts.repo ? ['github'] : opts.source ?? listSources(ctx.sys, reg).filter((s) => s.enabled && s.access === 'allowed' && s.id !== 'local-claude').map((s) => s.id);
         const reports: ScanReport[] = [];
         for (const id of ids) {
           let c;

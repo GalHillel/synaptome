@@ -429,6 +429,34 @@ INSERT INTO capabilities_fts (rowid, id, name, description, tags, body)
 DROP TABLE fts_carry;
 `,
   },
+  // Hotfix 0.2.1: versions 10 and 11 (M2 host sessions and embeddings) are not in this line; 0.3.0 adds them when it
+  // migrates (the runner applies every missing version, by number).
+  {
+    version: 12,
+    name: 'budget reservations for billable workflow calls (plan NG, M1, W6)',
+    // Additive only. A billable call reserves its worst-case cost before it starts; the reservation is settled with the
+    // actual usage, released when no call was made, or abandoned (counted at its estimate) when the outcome is unknown.
+    sql: `
+CREATE TABLE budget_reservations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, step_id TEXT NOT NULL, holder TEXT NOT NULL,
+  est_tokens INTEGER NOT NULL, est_usd REAL, status TEXT NOT NULL, actual_tokens INTEGER, actual_usd REAL,
+  reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX budget_reservations_run ON budget_reservations(run_id, status);
+`,
+  },
+  {
+    version: 13,
+    name: 'host locks as rows: atomic stale takeover, release by owner token only (plan NG, M1, C1)',
+    // Additive only. Replaces the lock files under <home>/locks, whose stale takeover was not atomic: a process could
+    // judge a lock stale just as its owner released it and a third process took it, then delete that third process's
+    // live lock, so two installers ran at once (C1).
+    sql: `
+CREATE TABLE host_locks (
+  lock_key TEXT PRIMARY KEY, target TEXT NOT NULL, holder TEXT NOT NULL, pid INTEGER NOT NULL, acquired_at TEXT NOT NULL
+);
+`,
+  },
 ];
 
 export function migrate(db: Db, backupsDir?: string): { applied: number[]; current: number } {
@@ -569,6 +597,8 @@ export const DEFAULT_SETTINGS = {
     approvalRequiredFor: ['installation', 'configuration', 'publishing', 'delete', 'credentials', 'shell'] as string[],
     maxParallel: 4,
     defaultTimeoutMs: 5 * 60_000,
+    /** Tokens reserved per call to an agentic provider (headless Claude Code), whose use is not bounded by max_tokens. */
+    agenticCallTokens: 200_000,
   },
   policy: {
     autoInstallThreshold: 88,
@@ -605,7 +635,7 @@ export const DEFAULT_SETTINGS = {
     curatedLists: ['punkpeye/awesome-mcp-servers', 'hesreallyhim/awesome-claude-code', 'ComposioHQ/awesome-claude-skills', 'VoltAgent/awesome-claude-code-subagents'] as string[],
     /** Cadence per job: hourly, daily, weekly or off. Runs only while `synaptome scheduler run` is running. */
     schedule: { incremental: 'daily', broad: 'weekly', updates: 'daily', gaps: 'daily' },
-    maxPerQuery: 15,
+    maxPerQuery: 100,
     preferredCategories: [] as string[],
     excludedCategories: [] as string[],
     minQualityToRecommend: 60,
@@ -681,6 +711,34 @@ export interface Sys {
   db: Db;
   settings(): Settings;
   close(): void;
+}
+
+/**
+ * Opens an existing home for a host hook (plan NG, M1): never creates folders, never migrates or backs up, waits at
+ * most `busyMs` for a lock, and returns null instead of throwing when the home is missing, from another product
+ * version (older or newer schema), or locked. A hook must never slow down or break the host's prompt.
+ */
+export function openForHook(explicitHome?: string, opts: { busyMs?: number } = {}): Sys | null {
+  try {
+    const home = resolveHome(explicitHome);
+    const paths = pathsFor(home);
+    if (!fs.existsSync(paths.db) || isLegacyHome(home)) return null;
+    const db = new Db(paths.db);
+    try {
+      db.raw.exec(`PRAGMA busy_timeout=${Math.max(0, Math.floor(opts.busyMs ?? 250))}`);
+      const current = db.get<{ v: number }>('SELECT MAX(version) v FROM schema_migrations')?.v ?? 0;
+      if (current !== Math.max(...MIGRATIONS.map((m) => m.version))) {
+        db.close();
+        return null;
+      }
+    } catch {
+      db.close();
+      return null;
+    }
+    return { home, paths, db, settings: () => getSettings(db), close: () => db.close() };
+  } catch {
+    return null;
+  }
 }
 
 export function openSystem(explicitHome?: string): Sys {

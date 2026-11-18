@@ -8,7 +8,7 @@ import { buildProgram } from '../src/main';
 // Every `synaptome …` command written in the public docs must exist, with the options it is shown with (Phase 12:
 // "docs commands executed as tests"; the quick start itself is executed by scripts/clean-room.ps1).
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const DOCS = ['README.md', 'packaging/README.md', 'docs/INSTALL.md', 'docs/QUICKSTART.md', 'docs/RELEASE_NOTES_0.2.0.md', 'INSTALLATION.md'];
+const DOCS = ['README.md', 'packaging/README.md', 'docs/INSTALL.md', 'docs/QUICKSTART.md', 'docs/RELEASE_NOTES_0.2.0.md', 'docs/RELEASE_NOTES_0.2.1.md', 'INSTALLATION.md'];
 
 /** Command lines in code blocks and inline code that start with the program name. */
 function commandLines(md: string): string[] {

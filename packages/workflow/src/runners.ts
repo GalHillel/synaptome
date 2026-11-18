@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import type { ModelProvider } from '@synaptome/core';
+import { type ModelProvider, killProcessTree, treeKillable } from '@synaptome/core';
 import type { Permission } from './definition';
 import { type Runners, type StepRunner, StepError } from './engine';
 
@@ -83,7 +83,9 @@ export function modelRunner(provider: ModelProvider): StepRunner {
     const prompt = String(input.prompt ?? '');
     if (!prompt) throw new StepError('a model step needs a prompt', false);
     if (signal.aborted) throw new StepError('cancelled', false);
-    const r = await provider.complete({ prompt, system: input.system ? String(input.system) : undefined, timeoutMs: input.timeoutMs ? Number(input.timeoutMs) : undefined });
+    const r = await provider.complete({ prompt, system: input.system ? String(input.system) : undefined, timeoutMs: input.timeoutMs ? Number(input.timeoutMs) : undefined, signal });
+    // A result that arrives after cancellation belongs to an abandoned attempt and is not used.
+    if (signal.aborted) throw new StepError('cancelled', false);
     if (!r.ok) throw new StepError(r.error ?? 'model call failed');
     return { output: { text: r.text, ms: r.ms, provider: provider.id } };
   };
@@ -102,13 +104,13 @@ export const shellRunner: StepRunner = async ({ sys, input, signal }) => {
   if (!program || !cfg.allow.map((a) => a.toLowerCase()).includes(base)) throw new StepError(`program "${program}" is not in workflow.shell.allow`, false);
   const env: Record<string, string> = { PATH: process.env.PATH ?? '', SYSTEMROOT: process.env.SYSTEMROOT ?? '', HOME: sys.home, USERPROFILE: sys.home };
   return new Promise((resolve, reject) => {
-    const child = spawn(program, args, { cwd: sys.home, env, shell: false, windowsHide: true });
+    const child = spawn(program, args, { cwd: sys.home, env, shell: false, windowsHide: true, ...treeKillable });
     let stdout = '';
     let stderr = '';
     const cap = (s: string, d: Buffer) => (s.length < 65_536 ? s + d.toString('utf8') : s);
     child.stdout.on('data', (d) => (stdout = cap(stdout, d)));
     child.stderr.on('data', (d) => (stderr = cap(stderr, d)));
-    signal.addEventListener('abort', () => child.kill(), { once: true });
+    signal.addEventListener('abort', () => killProcessTree(child), { once: true });
     child.on('error', (e) => reject(new StepError(`could not start ${program}: ${e.message}`, false)));
     child.on('close', (code) => (code === 0 ? resolve({ output: { code, stdout: stdout.slice(0, 65_536), stderr: stderr.slice(0, 65_536) } }) : reject(new StepError(`${program} exited with code ${code}: ${stderr.slice(0, 400)}`))));
   });

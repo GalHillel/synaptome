@@ -188,7 +188,7 @@ export async function evaluateCandidate(sys: Sys, deps: Deps, candidateId: strin
   emit(sys.db, 'candidate.quarantined', cand.id, { name: cand.name, files: pkg.files.length, skipped: pkg.skipped.length });
 
   // 2. AUDIT
-  const audit = auditPackage({ kind: cand.kind as any, files: pkg.files, skipped: pkg.skipped, declaredLicence: pkg.license ?? { spdx: cand.licenseSpdx, evidence: cand.licenseEvidence }, publisher: cand.publisher, provenanceVerified: pkg.provenance.verified, settings });
+  const audit = auditPackage({ kind: cand.kind as any, files: pkg.files, skipped: pkg.skipped, declaredLicence: pkg.license ?? { spdx: cand.licenseSpdx, evidence: cand.licenseEvidence }, publisher: cand.publisher, codeHolder: codeHolder(cand), provenanceVerified: pkg.provenance.verified, settings });
   storeAudit(sys, 'candidate', cand.id, contentHash, audit);
   const fmName = typeof audit.frontmatter.name === 'string' && audit.frontmatter.name ? audit.frontmatter.name : cand.name;
   const fmDesc = typeof audit.frontmatter.description === 'string' && audit.frontmatter.description ? audit.frontmatter.description : cand.description;
@@ -505,54 +505,56 @@ function backupIntact(dir: string, legacyExpected: string | null): boolean {
 }
 
 const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-function lockIsStale(file: string): boolean {
+/** A lock row is stale when its process has exited, or it is older than ten minutes (a hung or reused process). */
+function lockIsStale(row: { pid: number; acquired_at: string }): boolean {
+  if (Date.now() - Date.parse(row.acquired_at) > 10 * 60_000) return true;
   try {
-    const { pid, at } = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (Date.now() - Date.parse(at) > 10 * 60_000) return true;
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch (e: any) {
-      return e.code === 'ESRCH';
-    }
-  } catch {
-    // unreadable: either being written this instant, or left half-written by a crash
-    try {
-      return Date.now() - fs.statSync(file).mtimeMs > 5_000;
-    } catch {
-      return false;
-    }
+    process.kill(row.pid, 0);
+    return false;
+  } catch (e: any) {
+    return e.code === 'ESRCH';
   }
 }
+export const hostLockKey = (target: string) => shortHash(path.resolve(target).toLowerCase(), 16);
 
 /**
  * Serialises every change to one host directory across processes (CLI, dashboard, TUI, MCP server, scheduler).
- * A lock whose owner has exited is taken over. The unique index on live installations is the second line of defence.
+ * The lock is a row in `host_locks`, taken inside one write transaction (`BEGIN IMMEDIATE`): checking for a holder,
+ * judging it stale and taking it over happen atomically, so no other process can slip in between (C1: with lock
+ * files, a process could judge a lock stale just as its owner released it and a third process took it, then delete
+ * the third process's live lock). A holder releases only the row carrying its own token. The unique index on live
+ * installations stays as the second line of defence.
  */
 export function withHostLock<T>(sys: Sys, target: string, fn: () => T, waitMs = 20_000): T {
-  const dir = path.join(sys.paths.home, 'locks');
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${shortHash(path.resolve(target).toLowerCase(), 16)}.lock`);
+  const key = hostLockKey(target);
+  const token = `${process.pid}:${crypto.randomUUID()}`;
   const deadline = Date.now() + waitMs;
   for (;;) {
-    try {
-      fs.writeFileSync(file, JSON.stringify({ pid: process.pid, target, at: nowIso() }), { flag: 'wx' });
-      break;
-    } catch (e: any) {
-      if (e.code !== 'EEXIST' && e.code !== 'EPERM') throw e;
-      if (e.code === 'EEXIST' && lockIsStale(file)) {
-        fs.rmSync(file, { force: true });
-        continue;
-      }
-      if (Date.now() > deadline) throw new AcquisitionError('busy', `Another process is changing ${target}`, 'retry when it has finished');
-      sleepSync(20 + Math.floor(Math.random() * 40));
-    }
+    let acquired = false;
+    sys.db.tx(() => {
+      const row = sys.db.get<{ holder: string; pid: number; acquired_at: string }>('SELECT holder, pid, acquired_at FROM host_locks WHERE lock_key=?', key);
+      if (row && !lockIsStale(row)) return;
+      if (row) lockTrace('stale-takeover', key, row.holder);
+      sys.db.run('INSERT INTO host_locks (lock_key, target, holder, pid, acquired_at) VALUES (?,?,?,?,?) ON CONFLICT(lock_key) DO UPDATE SET target=excluded.target, holder=excluded.holder, pid=excluded.pid, acquired_at=excluded.acquired_at', key, target, token, process.pid, nowIso());
+      acquired = true;
+    });
+    if (acquired) break;
+    if (Date.now() > deadline) throw new AcquisitionError('busy', `Another process is changing ${target}`, 'retry when it has finished');
+    sleepSync(20 + Math.floor(Math.random() * 40));
   }
+  lockTrace('acquire', key, token);
   try {
     return fn();
   } finally {
-    fs.rmSync(file, { force: true });
+    lockTrace('release', key, token);
+    sys.db.run('DELETE FROM host_locks WHERE lock_key=? AND holder=?', key, token);
   }
+}
+
+/** Opt-in diagnostics (C1): with SYNAPTOME_LOCK_TRACE set to a file, every lock event is appended to it. */
+function lockTrace(event: string, key: string, holder: string) {
+  const out = process.env.SYNAPTOME_LOCK_TRACE;
+  if (out) fs.appendFileSync(out, `${process.hrtime.bigint()} ${Date.now()} ${process.pid} ${event} ${key} ${holder}\n`);
 }
 
 /** Resolves a recorded version of a capability (full content hash or a prefix of at least 8 characters). */
@@ -834,7 +836,7 @@ export async function inspectUpdate(sys: Sys, deps: Deps, candidateId: string): 
   const stage = path.join(sys.paths.quarantine, cand.id, `update-${hashFiles(pkg.files).slice(0, 16)}`);
   if (!fs.existsSync(stage)) writeTree(stage, pkg.files);
   const settings = sys.settings();
-  const audit = auditPackage({ kind: cand.kind as any, files: pkg.files, skipped: pkg.skipped, declaredLicence: pkg.license, publisher: cand.publisher, provenanceVerified: pkg.provenance.verified, settings });
+  const audit = auditPackage({ kind: cand.kind as any, files: pkg.files, skipped: pkg.skipped, declaredLicence: pkg.license, publisher: cand.publisher, codeHolder: codeHolder(cand), provenanceVerified: pkg.provenance.verified, settings });
   storeAudit(sys, 'update', cand.id, hashFiles(pkg.files), audit);
   const old = new Map(cand.files.map((f) => [f.path, f.sha256]));
   const neu = new Map(pkg.files.map((f) => [f.path, sha256(f.content)]));
@@ -940,6 +942,14 @@ function uniqueId(sys: Sys, base: string, candidateId: string) {
 /* ---------- content access for inspection and activation ---------- */
 
 /** Returns the entry file (and file list) of a capability from its snapshot, or from its host location for inventory entries. */
+/**
+ * Who holds the code: the owner of the candidate's repository (backported from D-062). A publisher name a listing merely
+ * states is not an identity, so official trust can never come from it alone.
+ */
+export function codeHolder(cand: { repo?: string | null }): string | null {
+  return cand.repo && /^[\w.-]+\/[\w.-]+$/.test(cand.repo) ? cand.repo.split('/')[0].toLowerCase() : null;
+}
+
 export function readCapabilityEntry(sys: Sys, capabilityId: string): { path: string; content: string; files: string[]; base: string } | null {
   const cap = getCapability(sys, capabilityId);
   if (!cap) return null;

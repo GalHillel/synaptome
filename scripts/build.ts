@@ -81,6 +81,7 @@ process.emitWarning = function (warning, ...rest) {
 };
 const { fileURLToPath } = await import('node:url');
 process.env.${PRODUCT.envPrefix}_LAUNCHER ??= fileURLToPath(import.meta.url);
+globalThis.__${PRODUCT.envPrefix}_INSTALL__ = { kind: 'package', root: fileURLToPath(new URL('.', import.meta.url)) };
 const { main } = await import('./cli.mjs');
 await main(process.argv);
 `,

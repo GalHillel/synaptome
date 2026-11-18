@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AdapterRegistry, buildAdapterRegistry, claudeCodeAdapter } from '@synaptome/adapters';
 import { type CandidateDraft, type DiscoveryConnector, type FetchedFile, getCandidate, hashFiles, listNotifications, readTree, sha256, shortHash, tempSystem } from '@synaptome/core';
 import { ConnectorRegistry, checkUpdates, scan, syncSources } from '@synaptome/discovery';
-import { type Deps, applyUpdate, approve, inspectUpdate, promotionPolicy, downgrade, evaluateCandidate, getInstallation, install, listInstallations, rollback, treeDigest, uninstall } from '../src/index';
+import { type Deps, applyUpdate, approve, inspectUpdate, promotionPolicy, downgrade, evaluateCandidate, getInstallation, install, listInstallations, rollback, treeDigest, uninstall, withHostLock } from '../src/index';
 
 const run = promisify(execFile);
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -318,11 +318,23 @@ describe('install matrix', () => {
   it('a lock left by a process that has exited is taken over', async () => {
     const r = await evaluateCandidate(sys, deps, await discover('acme/release-notes'));
     uninstall(sys, deps, r.autoInstalled[0]);
-    const lockDir = path.join(sys.paths.home, 'locks');
-    const file = path.join(lockDir, `${shortHash(path.resolve(sandboxTarget()).toLowerCase(), 16)}.lock`);
-    fs.writeFileSync(file, JSON.stringify({ pid: 2 ** 22 + 7, target: sandboxTarget(), at: new Date().toISOString() }));
+    sys.db.run('INSERT INTO host_locks (lock_key, target, holder, pid, acquired_at) VALUES (?,?,?,?,?)', shortHash(path.resolve(sandboxTarget()).toLowerCase(), 16), sandboxTarget(), `${2 ** 22 + 7}:dead`, 2 ** 22 + 7, new Date().toISOString());
     expect(install(sys, deps, r.capabilityId!, { host: 'claude-code', scope: 'sandbox' }).status).toBe('installed');
-    expect(fs.readdirSync(lockDir)).toEqual([]);
+    expect(sys.db.all('SELECT * FROM host_locks')).toEqual([]);
+  });
+
+  it('a live lock is never taken over, and a holder can release only its own lock (C1)', async () => {
+    const r = await evaluateCandidate(sys, deps, await discover('acme/release-notes'));
+    uninstall(sys, deps, r.autoInstalled[0]);
+    // Held by this (live) process under another token: a second acquirer must wait and give up as busy.
+    sys.db.run('INSERT INTO host_locks (lock_key, target, holder, pid, acquired_at) VALUES (?,?,?,?,?)', shortHash(path.resolve(sandboxTarget()).toLowerCase(), 16), sandboxTarget(), `${process.pid}:other`, process.pid, new Date().toISOString());
+    expect(() => withHostLock(sys, sandboxTarget(), () => 'ran', 300)).toThrow(/Another process is changing/);
+    // The other holder's lock is still there: nobody deleted it.
+    expect(sys.db.all<{ holder: string }>('SELECT holder FROM host_locks').map((x) => x.holder)).toEqual([`${process.pid}:other`]);
+    sys.db.run('DELETE FROM host_locks');
+    // Nested holders on different targets each release only their own row.
+    withHostLock(sys, sandboxTarget(), () => withHostLock(sys, `${sandboxTarget()}-b`, () => expect(sys.db.get<{ n: number }>('SELECT COUNT(*) n FROM host_locks')!.n).toBe(2)));
+    expect(sys.db.all('SELECT * FROM host_locks')).toEqual([]);
   });
 });
 
@@ -348,7 +360,7 @@ describe('install matrix: separate processes at the same instant', () => {
     expect(inst.treeHash).toBe(treeDigest(sandboxTarget()));
     expect(listInstallations(sys, { status: 'failed' })).toEqual([]);
     expect(sys.db.get<any>('PRAGMA integrity_check').integrity_check).toBe('ok');
-    expect(fs.readdirSync(path.join(sys.paths.home, 'locks'))).toEqual([]);
+    expect(sys.db.all('SELECT * FROM host_locks')).toEqual([]);
   }, 90_000);
 
   it('two processes installing different capabilities into the same directory: exactly one wins', async () => {
@@ -363,5 +375,46 @@ describe('install matrix: separate processes at the same instant', () => {
     const winner = results.findIndex((x) => x.ok) === 0 ? a.capabilityId! : b.capabilityId!;
     expect(JSON.parse(fs.readFileSync(path.join(sandboxTarget(), '.synaptome.json'), 'utf8')).capabilityId).toBe(winner);
     expect(sys.db.get<any>("SELECT COUNT(*) n FROM installations WHERE status='installed' AND scope='sandbox'").n).toBe(1);
+  }, 90_000);
+
+  it('a holder killed abruptly: its lock is taken over once, and five contenders never hold it at the same time (C1)', async () => {
+    const { spawn } = await import('node:child_process');
+    const CHILD = path.join(__dirname, 'fixtures', 'lock-child.ts');
+    const target = sandboxTarget();
+    const trace = path.join(sys.paths.home, 'lock-trace.txt');
+    const env = { ...process.env, TSX_TSCONFIG_PATH: path.join(ROOT, 'tsconfig.json'), NODE_NO_WARNINGS: '1', SYNAPTOME_LOCK_TRACE: trace };
+    const holder = spawn(process.execPath, ['--import', 'tsx', CHILD, 'hold-forever', sys.paths.home, target], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    await new Promise<void>((resolve) => holder.stdout.on('data', (d) => /held/.test(String(d)) && resolve()));
+    holder.kill('SIGKILL'); // abrupt: no finally, no release
+    await new Promise((r) => holder.on('close', r));
+    expect(sys.db.get<{ n: number }>('SELECT COUNT(*) n FROM host_locks')!.n).toBe(1); // left behind by the killed holder
+    const startAt = Date.now() + 2500;
+    const outs = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        new Promise<string>((resolve) => {
+          const p = spawn(process.execPath, ['--import', 'tsx', CHILD, 'contend', sys.paths.home, target, String(startAt), '150'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+          let out = '';
+          p.stdout.on('data', (d) => (out += d));
+          p.stderr.on('data', (d) => (out += d));
+          p.on('close', () => resolve(out.trim()));
+        }),
+      ),
+    );
+    expect(outs).toEqual(Array(5).fill('done'));
+    // From the trace: exactly one stale takeover (the killed holder's lock), and holds never overlap.
+    // Ordered by process.hrtime (system-wide performance counter on Windows), not Date.now(): wall-clock readings in
+    // different processes can disagree by about 1 ms and make a release-then-acquire look like an overlap.
+    const events = fs.readFileSync(trace, 'utf8').trim().split('\n').map((l) => { const [hr, , pid, event] = l.split(' '); return { hr: BigInt(hr), pid, event }; });
+    expect(events.filter((e) => e.event === 'stale-takeover')).toHaveLength(1);
+    // A stale takeover ends the killed holder's hold (it never logs a release); everything else must alternate.
+    let held: string | null = null;
+    for (const e of events.sort((a, b) => (a.hr < b.hr ? -1 : a.hr > b.hr ? 1 : 0))) {
+      if (e.event === 'stale-takeover') held = null;
+      else if (e.event === 'acquire') {
+        if (held && held !== e.pid) throw new Error(`overlap: ${e.pid} acquired while ${held} held the lock`);
+        held = e.pid;
+      } else if (e.event === 'release' && held === e.pid) held = null;
+    }
+    expect(sys.db.get<{ n: number }>('SELECT COUNT(*) n FROM host_locks')!.n).toBe(0);
   }, 90_000);
 });

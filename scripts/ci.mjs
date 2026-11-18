@@ -25,8 +25,42 @@ const steps = [
   ['Unit, integration, benchmark-threshold, fuzz and stress tests', npm('test')],
   ['Build (bundle, web assets, licence inventory; fails on a disallowed licence)', npm('run', 'build')],
   ['Built CLI starts and reports its version', node('dist/synaptome.mjs', '--version')],
-  ...(skipAudit ? [] : [['Dependency vulnerabilities (npm audit, high and critical fail)', npm('audit', '--audit-level=high')]]),
+  // Independent acceptance tests against the built package in dist/ (tests/blackbox/README.md).
+  ['Black-box acceptance tests against the built package', npm('run', 'test:blackbox')],
+  ...(skipAudit
+    ? []
+    : [
+        // Runtime dependencies (what the published package can load): no high or critical advisory is accepted.
+        ['Runtime dependency vulnerabilities (npm audit --omit=dev, high and critical fail)', npm('audit', '--omit=dev', '--audit-level=high')],
+        ['Development dependency vulnerabilities (high and critical fail unless listed, unexpired, in scripts/audit-exceptions.json)', devAudit],
+      ]),
 ];
+
+/** Every high or critical advisory in the full tree must be a listed, unexpired, development-only exception (D-046). */
+function devAudit() {
+  const cmd = npm('audit', '--json');
+  const r = spawnSync(cmd[0], cmd.slice(1), { cwd: root, encoding: 'utf8', shell: cmd[0] === 'npm' });
+  let report;
+  try {
+    report = JSON.parse(r.stdout);
+  } catch {
+    return `npm audit produced no JSON report (exit ${r.status})`;
+  }
+  const { exceptions } = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'audit-exceptions.json'), 'utf8'));
+  const today = new Date().toISOString().slice(0, 10);
+  const problems = [];
+  for (const [name, v] of Object.entries(report.vulnerabilities ?? {})) {
+    for (const via of v.via ?? []) {
+      if (typeof via === 'string' || !['high', 'critical'].includes(via.severity)) continue;
+      const id = /GHSA-[\w-]+/.exec(via.url ?? '')?.[0] ?? String(via.source);
+      const ex = exceptions.find((e) => e.id === id && e.package === name);
+      if (!ex) problems.push(`${name}: ${id} (${via.severity}) is not a listed exception`);
+      else if (ex.expires < today) problems.push(`${name}: exception ${id} expired on ${ex.expires}; re-check for a fix`);
+      else process.stdout.write(`accepted until ${ex.expires}: ${name} ${id} (${ex.via})\n`);
+    }
+  }
+  return problems.length ? problems.join('; ') : true;
+}
 
 let failed = null;
 for (const [title, cmd] of steps) {

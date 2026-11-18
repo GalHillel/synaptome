@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type ModelProvider, setSetting, tempSystem } from '@synaptome/core';
+import { type ModelProvider, openSystem, setSetting, tempSystem } from '@synaptome/core';
 import { buildProviders } from '@synaptome/providers';
 import { approveStep, cancelRun, defaultRunners, findWorkflow, getRun, runWorkflow, startRun } from '@synaptome/workflow';
-import { agentRunner, overBudget, parseContract, readBoard, trace } from '../src/index';
+import { BudgetRefused, abandon, agentRunner, committed, parseContract, readBoard, release, reservations, reserve, trace } from '../src/index';
 
 let sys: ReturnType<typeof tempSystem>;
 let repo: string;
@@ -122,21 +122,27 @@ describe('agent team on the workflow engine', () => {
     expect(trace(sys, id)!.calls[0]).toMatchObject({ ok: false, error: 'overloaded' });
   });
 
-  it('stops when the run budget is spent, before the next model call', async () => {
+  it('starts a call only when its worst case fits the budget (W6: never spends past the limit)', async () => {
+    // Each agentic call reserves 6000 tokens; the fake reports 1100. Budget 7000: research fits (0 + 6000), the next
+    // call would not (1100 actual + 6000 reserved > 7000), so it is refused before it starts. The old check let both
+    // run and stopped only after 2200 of 2000 were spent.
+    setSetting(sys.db, 'workflow.agenticCallTokens', 6000);
     const { provider, calls } = fakeClaude();
-    const id = startRun(sys, { ...team(), budget: { tokens: 2000 } }, { task: 'x', workdir: repo });
+    const id = startRun(sys, { ...team(), budget: { tokens: 7000 } }, { task: 'x', workdir: repo });
     const r = await runWorkflow(sys, id, { runners: runnersWith(provider) });
     expect(r.status).toBe('failed');
-    expect(calls.map((c) => c.role)).toEqual(['researcher', 'architect']); // 1100 + 1100 tokens, then the limit
-    expect(getRun(sys, id)!.steps.find((s) => s.id === 'implement')!.error).toBe('budget: token budget used: 2200 of 2000');
-    expect(overBudget(sys, id)).toMatch(/token budget/);
+    expect(calls.map((c) => c.role)).toEqual(['researcher']);
+    expect(getRun(sys, id)!.steps.find((s) => s.id === 'design')!.error).toMatch(/^budget: token budget: 1100 committed .* \+ 6000 for this call > 7000$/);
+    expect(trace(sys, id)!.totals.tokens).toBeLessThanOrEqual(7000);
+    expect(trace(sys, id)!.reservations.map((x: any) => x.status)).toEqual(['settled']);
   });
 
   it('a USD budget with unknown prices stops instead of guessing', async () => {
     const { provider } = fakeClaude();
     const id = startRun(sys, { ...team(), budget: { usd: 1 } }, { task: 'x', workdir: repo });
     await runWorkflow(sys, id, { runners: runnersWith(provider) });
-    expect(getRun(sys, id)!.steps.find((s) => s.id === 'design')!.error).toMatch(/cost of earlier calls is unknown/);
+    // Strict: with no price configured the very first call is refused (an unknown cost never fits a USD budget).
+    expect(getRun(sys, id)!.steps.find((s) => s.id === 'research')!.error).toMatch(/USD budget is set but the cost is unknown/);
   });
 
   it('can be cancelled mid-run', async () => {
@@ -165,5 +171,117 @@ describe('agent team on the workflow engine', () => {
   it('reads the answer contract, and degrades gracefully when it is missing', () => {
     expect(parseContract('text\n```json\n{"summary":"s","verdict":"changes","notes":{"a":1}}\n```')).toEqual({ summary: 's', verdict: 'changes', notes: { a: 1 }, parsed: true });
     expect(parseContract('no block here')).toMatchObject({ verdict: 'n/a', parsed: false, summary: 'no block here' });
+  });
+});
+
+describe('budget reservations (W6)', () => {
+  const parallelDef = (n: number, budget: Record<string, number>) => ({
+    id: 'w6.parallel', version: '1', title: 'parallel', description: 'n parallel agent calls', inputs: { workdir: { type: 'string', description: 'repo' } },
+    permissions: ['api'], budget,
+    steps: Array.from({ length: n }, (_, i) => ({ id: 's' + i, title: 's' + i, kind: 'agent', permissions: ['api'], with: { agent: 'researcher', task: 'look', workdir: '${inputs.workdir}' } })),
+  }) as any;
+
+  it('parallel steps cannot together exceed the token budget: only calls whose worst case fits are started', async () => {
+    setSetting(sys.db, 'workflow.agenticCallTokens', 5000);
+    setSetting(sys.db, 'workflow.maxParallel', 6);
+    const { provider, calls } = fakeClaude({ delayMs: 300 }); // overlapping calls
+    const id = startRun(sys, parallelDef(6, { tokens: 11_000 }), { workdir: repo });
+    await runWorkflow(sys, id, { runners: runnersWith(provider) });
+    // 11000 / 5000 = 2 worst cases at a time: with all six starting together, exactly two may start.
+    expect(calls).toHaveLength(2);
+    const steps = getRun(sys, id)!.steps;
+    expect(steps.filter((s) => s.status === 'succeeded')).toHaveLength(2);
+    expect(steps.filter((s) => /^budget: token budget/.test(s.error ?? ''))).toHaveLength(4);
+    expect(trace(sys, id)!.totals.tokens).toBeLessThanOrEqual(11_000);
+    expect(trace(sys, id)!.reservations.filter((x: any) => x.status === 'held')).toEqual([]);
+  });
+
+  it('a USD budget with prices: reservations use the price, actual cost replaces them, nothing passes the limit', async () => {
+    setSetting(sys.db, 'workflow.agenticCallTokens', 5000);
+    setSetting(sys.db, 'workflow.maxParallel', 6);
+    setSetting(sys.db, 'providers.prices', { 'claude-code-headless': { input: 10, output: 10 } }); // $10 per million: 5000 tokens = $0.05
+    const { provider, calls } = fakeClaude({ delayMs: 300 });
+    const id = startRun(sys, parallelDef(5, { usd: 0.12 }), { workdir: repo });
+    await runWorkflow(sys, id, { runners: runnersWith(provider) });
+    expect(calls).toHaveLength(2); // 2 x $0.05 reserved fit in $0.12, a third would not
+    const t = trace(sys, id)!;
+    expect(t.totals.usd).toBeCloseTo((2 * 1100 * 10) / 1e6, 9);
+    expect(t.totals.usd!).toBeLessThanOrEqual(0.12);
+    expect(t.reservations.map((x: any) => x.status).sort()).toEqual(['settled', 'settled']);
+  });
+
+  it('two connections (as two processes) reserving at the same time cannot both take the last room', async () => {
+    const id = startRun(sys, parallelDef(1, { tokens: 10_000 }), { workdir: repo });
+    const other = openSystem(sys.home);
+    try {
+      const results = await Promise.allSettled([sys, other, sys, other].map((s, i) => Promise.resolve().then(() => reserve(s, id, 's' + i, { tokens: 4000, usd: null }))));
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2); // 2 x 4000 <= 10000 < 3 x 4000
+      expect(results.filter((r) => r.status === 'rejected').every((r: any) => r.reason instanceof BudgetRefused)).toBe(true);
+      expect(committed(sys, id).tokens).toBe(8000);
+    } finally {
+      other.close();
+    }
+  });
+
+  it('six processes reserving at the same instant: exactly as many succeed as the budget allows', async () => {
+    const id = startRun(sys, parallelDef(1, { tokens: 10_000 }), { workdir: repo });
+    const { spawn } = await import('node:child_process');
+    const child = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'reserve-child.ts');
+    const startAt = Date.now() + 2500; // after all six have loaded
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        new Promise<string>((resolve) => {
+          const p = spawn(process.execPath, ['--import', 'tsx', child, sys.home, id, '4000', String(startAt)], { stdio: ['ignore', 'pipe', 'pipe'] });
+          let out = '';
+          p.stdout.on('data', (d) => (out += d));
+          p.stderr.on('data', (d) => (out += d));
+          p.on('close', () => resolve(out.trim()));
+        }),
+      ),
+    );
+    expect(results.filter((r) => r === 'ok')).toHaveLength(2); // 2 x 4000 <= 10000 < 3 x 4000
+    expect(results.filter((r) => r === 'refused')).toHaveLength(4);
+    expect(committed(sys, id).tokens).toBe(8000);
+  }, 60_000);
+
+  it('a cancelled call with no reported usage keeps counting at its estimate; a released one does not', () => {
+    const id = startRun(sys, parallelDef(1, { tokens: 50_000 }), { workdir: repo });
+    const a = reserve(sys, id, 's0', { tokens: 3000, usd: null })!;
+    const b = reserve(sys, id, 's0', { tokens: 2000, usd: null })!;
+    abandon(sys, a, 'cancelled while the call ran; its cost is unknown');
+    release(sys, b, 'rejected before processing');
+    expect(committed(sys, id)).toMatchObject({ tokens: 3000, held: 0, abandoned: 3000 });
+    expect(reservations(sys, id).map((x: any) => x.status)).toEqual(['abandoned', 'released']);
+  });
+
+  it('a reservation left by a process that died is abandoned (counted), never silently freed', () => {
+    const id = startRun(sys, parallelDef(1, { tokens: 10_000 }), { workdir: repo });
+    const now = new Date().toISOString();
+    sys.db.run("INSERT INTO budget_reservations (run_id, step_id, holder, est_tokens, est_usd, status, created_at, updated_at) VALUES (?, 's0', '2147483646:0', 6000, NULL, 'held', ?, ?)", id, now, now);
+    expect(() => reserve(sys, id, 's0', { tokens: 5000, usd: null })).toThrow(BudgetRefused); // 6000 + 5000 > 10000
+    expect(reservations(sys, id)[0]).toMatchObject({ status: 'abandoned', reason: expect.stringMatching(/process ended/) });
+    expect(reserve(sys, id, 's0', { tokens: 4000, usd: null })).not.toBeNull(); // 6000 + 4000 fits
+  });
+
+  it('cancelling a run mid-call abandons the reservation of the call that was running', async () => {
+    const slow: ModelProvider = {
+      id: 'claude-code-headless',
+      title: 'slow',
+      availability: async () => ({ available: true, authenticated: true, detail: 'fake' }),
+      complete: (req) =>
+        new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({ ok: true, text: 'late', ms: 5000, usage: { inputTokens: 10, outputTokens: 10 } }), 5000);
+          req.signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            resolve({ ok: false, text: '', error: 'aborted', ms: 1 });
+          });
+        }),
+    };
+    const id = startRun(sys, parallelDef(1, { tokens: 1_000_000 }), { workdir: repo });
+    const p = runWorkflow(sys, id, { runners: runnersWith(slow) });
+    await new Promise((r) => setTimeout(r, 300));
+    cancelRun(sys, id, 'tester');
+    expect((await p).status).toBe('cancelled');
+    expect(reservations(sys, id).map((x: any) => x.status)).toEqual(['abandoned']);
   });
 });

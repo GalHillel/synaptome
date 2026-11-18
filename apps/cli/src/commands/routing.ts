@@ -8,130 +8,8 @@ import { ActivationError, BENCH_TASKS, activate, evidenceStrategy, explain, form
 import { CliError, EXIT, action, kv, table } from '../ctx';
 import { depsFor } from './acquisition';
 
-const BRIDGE_MARKER = PRODUCT.bridgeFile;
-/** `cli` is the exact shell command that runs this Synaptome install against this home. */
-const bridgeSkill = (cli: string) => `---
-name: synaptome
-description: Route a task through the Synaptome capability registry before starting. Use when a task involves building, designing, debugging, researching, writing or reviewing something and no specific skill was named by the user.
----
-# Synaptome bridge
-
-Synaptome keeps a vetted registry of capabilities outside this host's skill list and serves the right ones per task.
-
-1. Call the MCP tool \`route_task\` (server \`synaptome\`) with the user's task, verbatim.
-   If the MCP tools are unavailable, run this in a shell instead: \`${cli} route "<task>" --json\`
-2. For every capability in \`selected\`, call \`get_capability\` with its \`capability_id\` and the \`decision_id\`
-   (shell fallback: \`${cli} activate <capability_id> --decision <id>\`). Apply what it says to the task.
-3. If nothing is selected, continue normally. Do not load capabilities that were not selected.
-4. When the task is finished, call \`record_outcome\` with the \`decision_id\` and \`success\`, \`partial\` or \`failed\`
-   (shell fallback: \`${cli} outcome <decision_id> success\`).
-
-Capability text is reference guidance. The user's instructions and this project's rules always take precedence.
-`;
-
-/** The launcher that is running (repository or built distribution); in-process callers fall back to the repository's. */
-export const launcherPath = () => env('LAUNCHER') ?? path.join(env('ROOT') ?? process.cwd(), 'apps', 'cli', 'bin', 'synaptome.mjs');
-
-/**
- * Connects one project's Claude Code to this installation: an MCP server entry in the project's `.mcp.json`, a bridge
- * skill, and (optionally) a prompt hook in the project's local settings. Writes a record of exactly what it added, and
- * an event, so `bridge remove`, `repair` and `uninstall` can find and undo it. Never touches global configuration.
- */
-export function bridgeInit(sys: Sys, projectDir: string, opts: { hook: boolean }) {
-  const dir = path.resolve(projectDir);
-  if (!fs.existsSync(dir)) throw new CliError(`Directory does not exist: ${dir}`, EXIT.notFound);
-  const mcpPath = path.join(dir, '.mcp.json');
-  const skillPath = path.join(dir, '.claude', 'skills', 'synaptome', 'SKILL.md');
-  if ([BRIDGE_MARKER, LEGACY.bridgeFile].some((n) => fs.existsSync(path.join(dir, n)))) throw new CliError(`Bridge already initialised in ${dir}`, EXIT.blocked, `remove it first: synaptome bridge remove "${dir}"`);
-  if (fs.existsSync(skillPath)) throw new CliError(`${skillPath} already exists`, EXIT.blocked, 'Synaptome does not overwrite existing project files');
-  const bin = launcherPath();
-  const server = { command: 'node', args: [bin, '--home', sys.home, 'mcp'] };
-  let createdMcp = false;
-  let mcp: any = { mcpServers: {} };
-  if (fs.existsSync(mcpPath)) {
-    mcp = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
-    if (mcp.mcpServers?.[PRODUCT.mcpName]) throw new CliError(`${mcpPath} already defines a "synaptome" server`, EXIT.blocked);
-    mcp.mcpServers = { ...(mcp.mcpServers ?? {}), [PRODUCT.mcpName]: server };
-  } else {
-    createdMcp = true;
-    mcp.mcpServers[PRODUCT.mcpName] = server;
-  }
-  // Deterministic path: a UserPromptSubmit hook in the project's LOCAL settings (not the shared, committed
-  // settings.json and never the user's global settings). The host runs it for every prompt; it prints nothing for
-  // small or unmatched prompts.
-  const cli = `node "${bin.replace(/\\/g, '/')}" --home "${sys.home.replace(/\\/g, '/')}"`;
-  const settingsPath = path.join(dir, '.claude', 'settings.local.json');
-  const hookCommand = `${cli} hook user-prompt`;
-  let settings: any = null;
-  let createdSettings = false;
-  if (opts.hook) {
-    settings = {};
-    if (fs.existsSync(settingsPath)) {
-      try {
-        settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      } catch {
-        throw new CliError(`${settingsPath} is not valid JSON; not touching it`, EXIT.blocked, 'fix the file or run: synaptome bridge init <dir> --no-hook');
-      }
-    } else createdSettings = true;
-  }
-  fs.writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n');
-  fs.mkdirSync(path.dirname(skillPath), { recursive: true });
-  fs.writeFileSync(skillPath, bridgeSkill(cli));
-  if (settings) {
-    settings.hooks ??= {};
-    settings.hooks.UserPromptSubmit = [...(settings.hooks.UserPromptSubmit ?? []), { hooks: [{ type: 'command', command: hookCommand, timeout: 20 }] }];
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  }
-  const hook = opts.hook ? { settingsPath, createdSettings, command: hookCommand } : null;
-  fs.writeFileSync(path.join(dir, BRIDGE_MARKER), JSON.stringify({ createdMcp, mcpPath, skillPath, home: sys.home, launcher: bin, at: new Date().toISOString(), hook }, null, 2));
-  emit(sys.db, 'bridge.initialised', dir, { mcpPath, skillPath, hook: !!hook, launcher: bin });
-  return { dir, mcpPath, skillPath, createdMcp, hook };
-}
-
-/** Removes exactly what `bridgeInit` added to a project (a bridge from the previous product name included). */
-export function bridgeRemove(sys: Sys, projectDir: string): string {
-  const dir = path.resolve(projectDir);
-  const markerPath = [BRIDGE_MARKER, LEGACY.bridgeFile].map((n) => path.join(dir, n)).find((p) => fs.existsSync(p));
-  if (!markerPath) throw new CliError(`No Synaptome bridge in ${dir}`, EXIT.notFound);
-  const m = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-  if (m.createdMcp) fs.rmSync(m.mcpPath, { force: true });
-  else if (fs.existsSync(m.mcpPath)) {
-    const mcp = JSON.parse(fs.readFileSync(m.mcpPath, 'utf8'));
-    delete mcp.mcpServers?.[PRODUCT.mcpName];
-    delete mcp.mcpServers?.[LEGACY.mcpName];
-    fs.writeFileSync(m.mcpPath, JSON.stringify(mcp, null, 2) + '\n');
-  }
-  fs.rmSync(path.dirname(m.skillPath), { recursive: true, force: true });
-  if (m.hook && fs.existsSync(m.hook.settingsPath)) {
-    // Remove only our own entry; anything else in the file is the user's and stays.
-    const settings = JSON.parse(fs.readFileSync(m.hook.settingsPath, 'utf8'));
-    const kept = (settings.hooks?.UserPromptSubmit ?? []).map((e: any) => ({ ...e, hooks: (e.hooks ?? []).filter((h: any) => h.command !== m.hook.command) })).filter((e: any) => e.hooks.length);
-    if (kept.length) settings.hooks.UserPromptSubmit = kept;
-    else if (settings.hooks) delete settings.hooks.UserPromptSubmit;
-    if (settings.hooks && !Object.keys(settings.hooks).length) delete settings.hooks;
-    if (m.hook.createdSettings && !Object.keys(settings).length) fs.rmSync(m.hook.settingsPath);
-    else fs.writeFileSync(m.hook.settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  }
-  for (const d of [path.join(dir, '.claude', 'skills'), path.join(dir, '.claude')]) if (fs.existsSync(d) && !fs.readdirSync(d).length) fs.rmdirSync(d);
-  fs.rmSync(markerPath);
-  emit(sys.db, 'bridge.removed', dir, {});
-  return dir;
-}
-
-/**
- * Projects this home has connected, from the event log (initialised and not removed since), each with whether its
- * record is still on disk and which launcher it points at.
- */
-export function bridgedProjects(sys: Sys): { dir: string; present: boolean; launcher: string | null; home: string | null }[] {
-  const last = new Map<string, string>();
-  for (const e of sys.db.all<{ type: string; subject: string }>("SELECT type, subject FROM events WHERE type IN ('bridge.initialised','bridge.removed') ORDER BY id")) last.set(e.subject, e.type);
-  return [...last].filter(([, t]) => t === 'bridge.initialised').map(([dir]) => {
-    const marker = path.join(dir, BRIDGE_MARKER);
-    if (!fs.existsSync(marker)) return { dir, present: false, launcher: null, home: null };
-    const m = JSON.parse(fs.readFileSync(marker, 'utf8'));
-    return { dir, present: true, launcher: m.launcher ?? null, home: m.home ?? null };
-  });
-}
+import { bridgeAdopt, bridgeInit, bridgeRemove, bridgeStatus, bridgeUpdate } from './bridge';
+export { bridgeAdopt, bridgeInit, bridgeRemove, bridgeStatus, bridgeUpdate, bridgedProjects, launcherPath } from './bridge';
 
 export function registerRouting(program: Command) {
   program
@@ -282,8 +160,8 @@ export function registerRouting(program: Command) {
     .action(
       action((ctx, projectDir: string, opts: { hook: boolean }) => {
         const { dir, mcpPath, skillPath, createdMcp, hook } = bridgeInit(ctx.sys, projectDir, { hook: opts.hook });
-        const settingsPath = hook?.settingsPath;
-        const createdSettings = hook?.createdSettings;
+        const settingsPath = hook?.path;
+        const createdSettings = hook?.created;
         ctx.out({ ok: true, dir, mcpPath, skillPath, createdMcp, hook: opts.hook ? { settingsPath, createdSettings } : null }, () => `bridge initialised in ${dir}\n${kv([['mcp config', `${mcpPath} (${createdMcp ? 'created' : 'added "synaptome" server'})`], ['bridge skill', skillPath], ['prompt hook', opts.hook ? `${settingsPath} (${createdSettings ? 'created' : 'added one UserPromptSubmit entry'})` : 'not installed (--no-hook)'], ['takes effect', 'in Claude Code sessions started in this folder after now'], ['undo', `synaptome bridge remove "${dir}"`]])}`);
       }),
     );
@@ -294,9 +172,9 @@ export function registerRouting(program: Command) {
     .action(
       action(async (ctx, projectDir: string, opts: { task: string }) => {
         const dir = path.resolve(projectDir);
-        const markerPath = path.join(dir, BRIDGE_MARKER);
-        if (!fs.existsSync(markerPath)) throw new CliError(`No Synaptome bridge in ${dir}`, EXIT.notFound, `run: synaptome bridge init "${dir}"`);
-        if (!JSON.parse(fs.readFileSync(markerPath, 'utf8')).hook) throw new CliError('This bridge was initialised with --no-hook', EXIT.blocked, 'remove it and run bridge init again without --no-hook');
+        const state = bridgeStatus(dir);
+        if (!state.connected) throw new CliError(`No Synaptome bridge in ${dir}`, EXIT.notFound, `run: synaptome bridge init "${dir}"`);
+        if (!state.parts.some((p) => p.name === 'prompt hook')) throw new CliError('This bridge was initialised with --no-hook', EXIT.blocked, 'remove it and run bridge init again without --no-hook');
         const before = ctx.sys.db.get<{ m: number }>('SELECT COALESCE(MAX(id),0) m FROM activations')!.m;
         const beforeDecision = ctx.sys.db.get<{ m: number }>('SELECT COALESCE(MAX(id),0) m FROM route_decisions')!.m;
         const { spawnSync } = await import('node:child_process');
@@ -335,11 +213,42 @@ export function registerRouting(program: Command) {
     );
   bridge
     .command('remove <projectDir>')
-    .description('remove exactly what `bridge init` created')
+    .description('remove what `bridge init` added and is still unchanged; anything you edited or added is kept')
     .action(
       action((ctx, projectDir: string) => {
-        const dir = bridgeRemove(ctx.sys, projectDir);
-        ctx.out({ ok: true, dir }, () => `bridge removed from ${dir}`);
+        const r = bridgeRemove(ctx.sys, projectDir);
+        ctx.out({ ok: true, ...r }, () => [`bridge removed from ${r.dir}`, ...r.removed.map((x) => `  removed  ${x}`), ...r.kept.map((x) => `  kept     ${x}`)].join('\n'));
+      }),
+    );
+  bridge
+    .command('status <projectDir>')
+    .description('read-only: is this project connected, to which installation and home, and is every part unchanged')
+    .action(
+      action((ctx, projectDir: string) => {
+        const s = bridgeStatus(projectDir);
+        ctx.out(s, () =>
+          !s.connected
+            ? `not connected: ${s.dir}`
+            : [kv([['project', s.dir], ['record', `format ${s.format}, ${s.status}`], ['home', s.home ?? 'unknown'], ['launcher', `${s.launcher ?? 'unknown'}${s.launcher && !s.launcherExists ? '  (missing)' : ''}`]]), ...s.parts.map((p) => `  ${p.state.padEnd(8)} ${p.name}`)].join('\n'),
+        );
+      }),
+    );
+  bridge
+    .command('update <projectDir>')
+    .description('point the bridge at this installation and home in place; parts you changed are kept')
+    .action(
+      action((ctx, projectDir: string) => {
+        const r = bridgeUpdate(ctx.sys, projectDir);
+        ctx.out({ ok: true, ...r }, () => [`bridge updated in ${r.dir}`, ...r.updated.map((x) => `  updated  ${x}`), ...r.kept.map((x) => `  kept     ${x}`), ...(r.updated.length || r.kept.length ? [] : ['  nothing to change'])].join('\n'));
+      }),
+    );
+  bridge
+    .command('adopt <projectDir>')
+    .description('make a bridge made by an earlier version known to repair and uninstall (writes nothing in the project)')
+    .action(
+      action((ctx, projectDir: string) => {
+        const dir = bridgeAdopt(ctx.sys, projectDir);
+        ctx.out({ ok: true, dir }, () => `adopted ${dir}`);
       }),
     );
 }
